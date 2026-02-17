@@ -1,0 +1,37 @@
+[project]
+name = "kvguard"
+version = "0.1.0"
+description = "Catastrophe-aware KV-cache compression controller for reasoning models"
+readme = "README.md"
+authors = [
+    { name = "Joaquin Campo", email = "jcampo@pento.ai" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.46",
+    "kvpress>=0.2",
+    "datasets>=2.21",
+    "loguru>=0.7",
+    "typer>=0.12",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
+
+[project.scripts]
+kvguard = "kvguard:main"
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
