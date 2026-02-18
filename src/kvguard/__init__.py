@@ -47,5 +47,40 @@ def run(
     logger.info(f"Done. Results at {path}")
 
 
+@app.command()
+def sweep(
+    num_prompts: int = typer.Option(50, help="Prompts per configuration"),
+    seed: int = typer.Option(42, help="Random seed for prompt selection"),
+    output_dir: Path = typer.Option(Path("results"), help="Directory for output JSON"),
+    max_new_tokens: int = typer.Option(512, help="Max tokens per prompt"),
+    model: str = typer.Option("Qwen/Qwen2.5-3B-Instruct", help="HuggingFace model"),
+    skip_existing: bool = typer.Option(True, help="Skip configs with existing results"),
+) -> None:
+    """Run the full compression sweep: baseline + 5 ratios x 3 methods."""
+    from kvguard.experiment import run_sweep as _run_sweep
+
+    logger.info(f"Starting sweep: {num_prompts} prompts, output={output_dir}")
+    _run_sweep(
+        num_prompts=num_prompts,
+        seed=seed,
+        output_dir=output_dir,
+        max_new_tokens=max_new_tokens,
+        model_name=model,
+        skip_existing=skip_existing,
+    )
+    logger.info("Sweep complete.")
+
+
+@app.command()
+def analyze(
+    output_dir: Path = typer.Option(Path("results"), help="Results directory"),
+    num_prompts: int = typer.Option(50, help="Filter to results with this prompt count"),
+) -> None:
+    """Run full analysis on sweep results."""
+    from kvguard.analyze import full_analysis
+
+    full_analysis(output_dir, num_prompts)
+
+
 def main() -> None:
     app()

@@ -100,9 +100,11 @@ def run_single(
 
     # Extract per-token signals from generation scores
     signals = []
+    prev_entropy: float | None = None
     for score, token_id in zip(outputs.scores, generated_ids):
         logits = score[0]  # remove batch dim
-        sig = extract_signals(logits, token_id, tokenizer)
+        sig = extract_signals(logits, token_id, tokenizer, prev_entropy=prev_entropy)
+        prev_entropy = sig.entropy
         signals.append(sig)
 
     # Run catastrophe detectors
@@ -180,14 +182,15 @@ def save_results(results: list[RunResult], config: ExperimentConfig) -> Path:
     return path
 
 
-def run_experiment(config: ExperimentConfig) -> list[RunResult]:
-    """Run the full experiment: load model, iterate prompts, collect results."""
-    logger.info(f"Experiment: {config.press_name} @ compression_ratio={config.compression_ratio}")
-
-    model, tokenizer, device = load_model(config)
-    press = get_press(config.press_name, config.compression_ratio)
-    prompts = load_gsm8k(config.num_prompts, config.seed)
-
+def run_prompts(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    device: str,
+    prompts: list[dict],
+    config: ExperimentConfig,
+    press: object | None,
+) -> list[RunResult]:
+    """Run all prompts with a pre-loaded model. Returns list of results."""
     results: list[RunResult] = []
     for i, prompt_data in enumerate(prompts):
         logger.info(f"[{i + 1}/{len(prompts)}] {prompt_data['id']}")
@@ -207,10 +210,14 @@ def run_experiment(config: ExperimentConfig) -> list[RunResult]:
             f"| catastrophes=[{cats}] | {elapsed:.1f}s"
         )
         results.append(result)
+    return results
 
-    # Print summary
+
+def print_summary(results: list[RunResult], config: ExperimentConfig) -> None:
+    """Log a summary of results for one configuration."""
     s = summarize(results)
     logger.info("=" * 60)
+    logger.info(f"CONFIG: {config.press_name} @ ratio={config.compression_ratio}")
     if s["total"] > 0:
         logger.info(
             f"SUMMARY: {s['total']} prompts | accuracy={s['accuracy']:.1%}"
@@ -223,4 +230,122 @@ def run_experiment(config: ExperimentConfig) -> list[RunResult]:
         logger.warning("No results collected — all prompts failed.")
     logger.info("=" * 60)
 
+
+def run_experiment(config: ExperimentConfig) -> list[RunResult]:
+    """Run the full experiment: load model, iterate prompts, collect results."""
+    logger.info(f"Experiment: {config.press_name} @ compression_ratio={config.compression_ratio}")
+
+    model, tokenizer, device = load_model(config)
+    press = get_press(config.press_name, config.compression_ratio)
+    prompts = load_gsm8k(config.num_prompts, config.seed)
+    results = run_prompts(model, tokenizer, device, prompts, config, press)
+    print_summary(results, config)
     return results
+
+
+def result_exists(config: ExperimentConfig) -> bool:
+    """Check if a result file already exists for this config."""
+    output_dir = config.output_dir / config.press_name
+    model_short = config.model_name.split("/")[-1]
+    ratio_str = f"{config.compression_ratio:.3f}"
+    filename = f"{model_short}_{ratio_str}_{config.num_prompts}p.json"
+    return (output_dir / filename).exists()
+
+
+# Sweep configuration: ratios × methods
+SWEEP_RATIOS = [0.0, 0.25, 0.5, 0.625, 0.75, 0.875]
+SWEEP_METHODS = ["streaming_llm", "snapkv", "observed_attention"]
+
+
+def build_sweep_configs(
+    num_prompts: int = 50,
+    seed: int = 42,
+    output_dir: Path = Path("results"),
+    max_new_tokens: int = 512,
+    model_name: str = "Qwen/Qwen2.5-3B-Instruct",
+) -> list[ExperimentConfig]:
+    """Build the full list of sweep configurations."""
+    configs = []
+    for ratio in SWEEP_RATIOS:
+        if ratio == 0.0:
+            configs.append(ExperimentConfig(
+                model_name=model_name, press_name="none",
+                compression_ratio=0.0, num_prompts=num_prompts,
+                seed=seed, output_dir=output_dir,
+                max_new_tokens=max_new_tokens,
+            ))
+        else:
+            for method in SWEEP_METHODS:
+                configs.append(ExperimentConfig(
+                    model_name=model_name, press_name=method,
+                    compression_ratio=ratio, num_prompts=num_prompts,
+                    seed=seed, output_dir=output_dir,
+                    max_new_tokens=max_new_tokens,
+                ))
+    return configs
+
+
+def run_sweep(
+    num_prompts: int = 50,
+    seed: int = 42,
+    output_dir: Path = Path("results"),
+    max_new_tokens: int = 512,
+    model_name: str = "Qwen/Qwen2.5-3B-Instruct",
+    skip_existing: bool = True,
+) -> None:
+    """Run the full compression sweep, reusing models across configs.
+
+    Groups configurations by attention implementation to minimize reloads:
+    - Group 1: none, streaming_llm, snapkv (default attention)
+    - Group 2: observed_attention (eager attention)
+    """
+    import gc
+
+    configs = build_sweep_configs(
+        num_prompts=num_prompts, seed=seed, output_dir=output_dir,
+        max_new_tokens=max_new_tokens, model_name=model_name,
+    )
+
+    # Split into groups by attention requirement
+    default_configs = [c for c in configs if c.press_name != "observed_attention"]
+    eager_configs = [c for c in configs if c.press_name == "observed_attention"]
+
+    # Pre-load prompts (same for all configs)
+    prompts = load_gsm8k(num_prompts, seed)
+
+    total = len(configs)
+    done = 0
+
+    for group_name, group_configs in [("default", default_configs), ("eager", eager_configs)]:
+        if not group_configs:
+            continue
+
+        # Filter out already-completed configs
+        pending = [c for c in group_configs if not (skip_existing and result_exists(c))]
+        skipped = len(group_configs) - len(pending)
+        if skipped:
+            logger.info(f"Skipping {skipped} existing results in {group_name} group")
+            done += skipped
+
+        if not pending:
+            continue
+
+        logger.info(f"Loading model for {group_name} attention group ({len(pending)} configs)...")
+        model, tokenizer, device = load_model(pending[0])
+
+        for config in pending:
+            done += 1
+            logger.info(f"\n{'#' * 60}")
+            logger.info(f"SWEEP [{done}/{total}] {config.press_name} @ {config.compression_ratio}")
+            logger.info(f"{'#' * 60}")
+
+            press = get_press(config.press_name, config.compression_ratio)
+            results = run_prompts(model, tokenizer, device, prompts, config, press)
+            print_summary(results, config)
+            save_results(results, config)
+
+        # Free model memory before loading next group
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

@@ -30,11 +30,23 @@ class ExperimentConfig(BaseSettings):
 
 
 class TokenSignals(BaseModel):
-    entropy: float
-    top1_prob: float
-    top5_prob: float
-    top1_token: str
-    rank_of_chosen: int
+    # Core logit features (from experiment 001)
+    entropy: float  # H_overall: total entropy of output distribution
+    top1_prob: float  # probability of most likely token
+    top5_prob: float  # cumulative probability of top-5 tokens
+    top1_token: str  # decoded top-1 token
+    rank_of_chosen: int  # rank of the actually chosen token
+
+    # HALT features (new — backward-compatible defaults)
+    top20_logprobs: list[float] = []  # log-probs of top-20 tokens
+    h_alts: float = 0.0  # entropy excluding top-1 (competitor disagreement)
+    avg_logp: float = 0.0  # mean log-prob (distribution sharpness)
+
+    # Temporal feature (computed from consecutive tokens)
+    delta_h: float | None = None  # H(t) - H(t-1), None for first token
+
+    # Token classification
+    is_thinking_token: bool = False
 
 
 class RunResult(BaseModel):
