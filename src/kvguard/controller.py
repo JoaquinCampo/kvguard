@@ -70,11 +70,11 @@ class ControllerConfig:
     """
 
     tau_low: float = 0.3
-    tau_high: float = 0.6
-    k_escalate: int = 3
+    tau_high: float = 0.7
+    k_escalate: int = 8
     j_deescalate: int = 5
     base_compression_ratio: float = 0.875
-    safe_compression_ratio: float = 0.5
+    safe_compression_ratio: float = 0.0
     weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_WEIGHTS))
     norms: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_NORMS))
 

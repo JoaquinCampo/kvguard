@@ -334,7 +334,7 @@ class TestControllerConfig:
         assert 0.0 < cfg.tau_low < cfg.tau_high < 1.0
         assert cfg.k_escalate >= 1
         assert cfg.j_deescalate >= 1
-        assert 0.0 < cfg.safe_compression_ratio < cfg.base_compression_ratio
+        assert 0.0 <= cfg.safe_compression_ratio < cfg.base_compression_ratio
 
     def test_custom_config(self) -> None:
         cfg = ControllerConfig(tau_low=0.2, tau_high=0.8, k_escalate=5)
