@@ -39,7 +39,12 @@ def _load_checkpoint(config: ExperimentConfig) -> list[RunResult]:
 
 
 def _append_checkpoint(result: RunResult, config: ExperimentConfig) -> None:
-    """Append a single result to the checkpoint file."""
+    """Append a single result to the checkpoint file.
+
+    NOTE: This write is not atomic — a crash mid-write can corrupt the
+    checkpoint and block resume.  Acceptable for now; fix if it causes
+    real problems.
+    """
     ckpt = _checkpoint_path(config)
     ckpt.parent.mkdir(parents=True, exist_ok=True)
     with ckpt.open("a") as f:

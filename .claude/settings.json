@@ -1,0 +1,55 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make *)",
+      "Bash(uv run *)",
+      "Bash(uv sync *)",
+      "Bash(pytest *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git stash*)",
+      "Bash(bash scripts/*)",
+      "Bash(chmod *)",
+      "Bash(ls *)",
+      "Bash(wc *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Edit(pyproject.toml)",
+      "Write(pyproject.toml)",
+      "Edit(uv.lock)",
+      "Write(uv.lock)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | python3 -c \"import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))\" 2>/dev/null); if echo \"$FILE\" | grep -qE '\\.py$'; then cd /Users/joaquincamponario/Documents/INCO/RESEARCH/kvguard && uv run ruff format \"$FILE\" 2>/dev/null && uv run ruff check --fix \"$FILE\" 2>/dev/null; fi; exit 0"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | python3 -c \"import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))\" 2>/dev/null); if echo \"$FILE\" | grep -qE 'results/.*\\.json$'; then echo 'BLOCKED: Do not edit result files in results/ — they are experiment output' >&2; exit 2; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

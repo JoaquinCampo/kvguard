@@ -110,11 +110,15 @@ def train(
     seed: int = typer.Option(42, help="Random seed"),
     output_dir: Path = typer.Option(Path("models"), help="Directory for model + metrics"),
     run_cv: bool = typer.Option(True, help="Run leave-one-compressor-out CV"),
+    model_filter: str = typer.Option("", help="Only use traces from this model (empty=all)"),
 ) -> None:
     """Train hazard predictor on sweep results."""
     from kvguard.train import run_training
 
+    mf = model_filter or None
     logger.info(f"Training: results={results_dir}, H={horizon}, val_frac={val_fraction}")
+    if mf:
+        logger.info(f"Model filter: {mf}")
     result = run_training(
         results_dir,
         num_prompts=num_prompts,
@@ -124,6 +128,7 @@ def train(
         random_state=seed,
         run_cv=run_cv,
         output_dir=output_dir,
+        model_filter=mf,
     )
     logger.info(f"Train metrics: {result.train_metrics.to_dict()}")
     logger.info(f"Val metrics:   {result.val_metrics.to_dict()}")
@@ -148,6 +153,7 @@ def eval_controller(
     k_escalate: int = typer.Option(8, help="Consecutive high-risk tokens to escalate"),
     j_deescalate: int = typer.Option(5, help="Consecutive low-risk tokens to de-escalate"),
     output_path: Path = typer.Option(Path("results/controller_eval.json"), help="Output JSON path"),
+    model_filter: str = typer.Option("", help="Only use traces from this model (empty=all)"),
 ) -> None:
     """Evaluate controller via offline simulation on existing sweep traces."""
     import json
@@ -163,6 +169,7 @@ def eval_controller(
         evaluate_controller as _eval_ctrl,
     )
 
+    mf = model_filter or None
     logger.info(f"Loading predictor from {model_path}")
     predictor = xgb.XGBClassifier()
     predictor.load_model(str(model_path))
@@ -185,12 +192,15 @@ def eval_controller(
         logger.info(f"Evaluating on {len(holdout_prompt_ids)} held-out prompts")
 
     logger.info(f"Running controller evaluation on {results_dir}")
+    if mf:
+        logger.info(f"Model filter: {mf}")
     result = _eval_ctrl(
         results_dir,
         predictor,
         num_prompts=num_prompts,
         controller_config=config,
         holdout_prompt_ids=holdout_prompt_ids,
+        model_filter=mf,
     )
 
     print(format_eval_table(result))

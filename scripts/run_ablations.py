@@ -10,8 +10,6 @@ Runs four ablation experiments to demonstrate component contributions:
 All ablations reuse the same loaded traces and predictor for efficiency.
 """
 
-from __future__ import annotations
-
 import json
 import sys
 from dataclasses import asdict

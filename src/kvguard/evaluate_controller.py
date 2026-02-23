@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 import xgboost as xgb
+from loguru import logger
 
 from kvguard.controller import ControllerConfig, Mode
 from kvguard.features import (
@@ -43,6 +44,8 @@ class TraceInfo:
     num_tokens: int
     correct: bool | None
     signals: list[dict[str, Any]]
+    max_new_tokens: int = 512
+    nt_onset_frac: float = 0.75
 
     @property
     def has_cfr_catastrophe(self) -> bool:
@@ -51,12 +54,24 @@ class TraceInfo:
 
     @property
     def cfr_onset(self) -> int | None:
-        """Earliest onset of a CFR-relevant catastrophe."""
-        onsets = [
-            pos
-            for cat, pos in self.catastrophe_onsets.items()
-            if cat in ("looping", "non_termination")
-        ]
+        """Earliest onset of a CFR-relevant catastrophe.
+
+        For non_termination, uses a proxy onset at ``nt_onset_frac * max_new_tokens``
+        (clamped to sequence length) instead of the raw catastrophe_onsets value,
+        matching the proxy logic in :func:`kvguard.labeling.compute_hazard_labels`.
+        """
+        onsets: list[int] = []
+
+        if "looping" in self.catastrophe_onsets:
+            onsets.append(self.catastrophe_onsets["looping"])
+
+        if "non_termination" in self.catastrophes:
+            proxy = min(
+                int(self.nt_onset_frac * self.max_new_tokens),
+                self.num_tokens - 1,
+            )
+            onsets.append(proxy)
+
         return min(onsets) if onsets else None
 
 
@@ -64,8 +79,17 @@ def load_all_traces(
     results_dir: Path,
     *,
     num_prompts: int = 50,
+    nt_onset_frac: float = 0.75,
+    model_filter: str | None = None,
 ) -> dict[tuple[str, float], dict[str, TraceInfo]]:
     """Load all traces indexed by (press, ratio) -> {prompt_id: TraceInfo}.
+
+    Args:
+        results_dir: Directory with sweep result JSONs.
+        num_prompts: Filter to files matching this prompt count.
+        nt_onset_frac: Non-termination proxy onset fraction, passed to TraceInfo
+            for consistent cfr_onset computation.
+        model_filter: If set, only include traces where ``run.model`` matches.
 
     Returns:
         Nested dict: traces[(press, ratio)][prompt_id] = TraceInfo
@@ -79,6 +103,8 @@ def load_all_traces(
         _config, results_list = load_result_file(fpath)
         for rd in results_list:
             run = result_dict_to_run_result(rd)
+            if model_filter and run.model != model_filter:
+                continue
             key = (run.press, run.compression_ratio)
             if key not in traces:
                 traces[key] = {}
@@ -94,6 +120,8 @@ def load_all_traces(
                 num_tokens=run.num_tokens_generated,
                 correct=run.correct,
                 signals=sigs[: run.num_tokens_generated],
+                max_new_tokens=run.max_new_tokens,
+                nt_onset_frac=nt_onset_frac,
             )
 
     return traces
@@ -327,6 +355,8 @@ def evaluate_controller(
     controller_config: ControllerConfig | None = None,
     rolling_window: int = ROLLING_WINDOW,
     holdout_prompt_ids: set[str] | None = None,
+    nt_onset_frac: float = 0.75,
+    model_filter: str | None = None,
 ) -> EvalResult:
     """Run full offline controller evaluation.
 
@@ -342,6 +372,8 @@ def evaluate_controller(
         num_prompts: Filter to files matching this prompt count.
         controller_config: Controller tuning parameters.
         rolling_window: Feature window size.
+        nt_onset_frac: Non-termination proxy onset fraction.
+        model_filter: If set, only include traces where ``run.model`` matches.
 
     Returns:
         EvalResult with per-budget-level CFR comparisons.
@@ -350,7 +382,12 @@ def evaluate_controller(
     safe_ratio = config.safe_compression_ratio
 
     # Load all traces
-    all_traces = load_all_traces(results_dir, num_prompts=num_prompts)
+    all_traces = load_all_traces(
+        results_dir,
+        num_prompts=num_prompts,
+        nt_onset_frac=nt_onset_frac,
+        model_filter=model_filter,
+    )
 
     if holdout_prompt_ids is not None:
         all_traces = filter_traces_by_prompts(all_traces, holdout_prompt_ids)
@@ -371,6 +408,14 @@ def evaluate_controller(
             safe_key = ("none", 0.0)
         else:
             safe_key = (press, safe_ratio)
+
+        if safe_key not in all_traces:
+            logger.warning(
+                f"Safe key {safe_key} not in traces. "
+                f"Available: {sorted(all_traces.keys())}. "
+                f"Skipping ({press}, {ratio})."
+            )
+            continue
         safe_traces = all_traces.get(safe_key, {})
 
         n_prompts_actual = len(prompt_traces)

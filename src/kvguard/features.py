@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from loguru import logger
 
 from kvguard.config import RunResult
-from kvguard.labeling import compute_hazard_labels
+from kvguard.labeling import compute_hazard_labels, compute_onset_position
 
 # ---------------------------------------------------------------------------
 # Feature schema
@@ -198,6 +199,9 @@ class Dataset:
     trace_ids: np.ndarray  # (N_total_tokens,) trace index per token
     feature_names: list[str]  # ordered feature column names
     traces: list[TraceMeta] = field(default_factory=list)
+    onset_positions: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=np.int32)
+    )  # per-token onset position (-1 if no onset)
 
     def drop_features(self, names: list[str]) -> "Dataset":
         """Return a new Dataset with specified feature columns removed."""
@@ -215,6 +219,7 @@ class Dataset:
             trace_ids=self.trace_ids.copy(),
             feature_names=[self.feature_names[i] for i in keep],
             traces=list(self.traces),
+            onset_positions=self.onset_positions.copy(),
         )
 
 
@@ -237,6 +242,7 @@ def build_dataset(
     horizon: int = 32,
     nt_onset_frac: float = 0.75,
     rolling_window: int = ROLLING_WINDOW,
+    model_filter: str | None = None,
 ) -> Dataset:
     """Load all sweep result files and build a flat ML dataset.
 
@@ -246,6 +252,7 @@ def build_dataset(
         horizon: Hazard label horizon H.
         nt_onset_frac: Non-termination proxy onset fraction.
         rolling_window: Window size for rolling features.
+        model_filter: If set, only include traces where ``run.model`` matches.
 
     Returns:
         Dataset with concatenated features, labels, and metadata.
@@ -259,6 +266,7 @@ def build_dataset(
     all_X: list[np.ndarray] = []
     all_y: list[np.ndarray] = []
     all_trace_ids: list[np.ndarray] = []
+    all_onset_positions: list[np.ndarray] = []
     traces: list[TraceMeta] = []
     trace_idx = 0
 
@@ -266,6 +274,8 @@ def build_dataset(
         _config, results_list = load_result_file(fpath)
         for result_dict in results_list:
             run = result_dict_to_run_result(result_dict)
+            if model_filter and run.model != model_filter:
+                continue
             n_tok = run.num_tokens_generated
             if n_tok == 0:
                 continue
@@ -274,6 +284,12 @@ def build_dataset(
             sigs = [
                 s if isinstance(s, dict) else s.model_dump() for s in result_dict.get("signals", [])
             ]
+            if len(sigs) < n_tok:
+                logger.warning(
+                    f"Trace {run.prompt_id} ({run.press}, {run.compression_ratio}): "
+                    f"expected {n_tok} signals, got {len(sigs)}. Skipping."
+                )
+                continue
             X_base = flatten_signals(sigs[:n_tok])
             X_full = add_rolling_features(
                 X_base,
@@ -285,6 +301,11 @@ def build_dataset(
             # Labels
             labels = compute_hazard_labels(run, horizon=horizon, nt_onset_frac=nt_onset_frac)
             y = np.array(labels, dtype=np.float32)
+
+            # Onset position for pre-onset evaluation
+            onset = compute_onset_position(run, nt_onset_frac=nt_onset_frac)
+            onset_val = onset if onset is not None else -1
+            all_onset_positions.append(np.full(n_tok, onset_val, dtype=np.int32))
 
             all_X.append(X_full)
             all_y.append(y)
@@ -311,4 +332,5 @@ def build_dataset(
         trace_ids=np.concatenate(all_trace_ids, axis=0),
         feature_names=feature_names(rolling_window),
         traces=traces,
+        onset_positions=np.concatenate(all_onset_positions, axis=0),
     )

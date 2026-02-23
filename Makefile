@@ -1,4 +1,4 @@
-.PHONY: check fmt lint typecheck test
+.PHONY: check fmt lint typecheck test setup-server download-models phase2 status
 
 check: fmt lint typecheck test
 
@@ -13,3 +13,16 @@ typecheck:
 
 test:
 	uv run pytest -x -q
+
+# Phase 2 targets
+setup-server:
+	bash scripts/setup_server.sh
+
+download-models:
+	bash scripts/download_models.sh
+
+phase2:
+	bash scripts/run_phase2.sh
+
+status:
+	bash scripts/check_status.sh

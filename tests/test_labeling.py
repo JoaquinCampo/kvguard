@@ -1,7 +1,7 @@
 """Tests for hazard labeling."""
 
 from kvguard.config import RunResult, TokenSignals
-from kvguard.labeling import compute_hazard_labels
+from kvguard.labeling import compute_hazard_labels, compute_onset_position
 
 
 def _make_result(
@@ -188,3 +188,55 @@ class TestEdgeCases:
         labels = compute_hazard_labels(result, horizon=32)
         # No applicable onset → all zeros
         assert labels == [0] * 100
+
+
+# ---------------------------------------------------------------------------
+# Tests: compute_onset_position
+# ---------------------------------------------------------------------------
+
+
+class TestComputeOnsetPosition:
+    def test_compute_onset_position_looping(self) -> None:
+        """Looping onset returns that position."""
+        result = _make_result(
+            n_tokens=100,
+            catastrophes=["looping"],
+            catastrophe_onsets={"looping": 50},
+        )
+        assert compute_onset_position(result) == 50
+
+    def test_compute_onset_position_non_termination(self) -> None:
+        """Non-termination returns proxy position."""
+        result = _make_result(
+            n_tokens=512,
+            max_new_tokens=512,
+            catastrophes=["non_termination"],
+            stop_reason="max_tokens",
+        )
+        # proxy = int(0.75 * 512) = 384
+        assert compute_onset_position(result, nt_onset_frac=0.75) == 384
+
+    def test_compute_onset_position_both(self) -> None:
+        """Both looping and non_termination returns min of both."""
+        result = _make_result(
+            n_tokens=512,
+            max_new_tokens=512,
+            catastrophes=["looping", "non_termination"],
+            catastrophe_onsets={"looping": 50},
+            stop_reason="max_tokens",
+        )
+        # looping=50, nt_proxy=384 → min=50
+        assert compute_onset_position(result) == 50
+
+    def test_compute_onset_position_none(self) -> None:
+        """No applicable catastrophe returns None."""
+        result = _make_result(n_tokens=100)
+        assert compute_onset_position(result) is None
+
+    def test_compute_onset_position_wrong_answer_ignored(self) -> None:
+        """wrong_answer only returns None."""
+        result = _make_result(
+            n_tokens=100,
+            catastrophes=["wrong_answer"],
+        )
+        assert compute_onset_position(result) is None

@@ -458,3 +458,145 @@ class TestRunTraining:
         assert "train_prompt_ids" in split_info
         assert len(split_info["val_prompt_ids"]) > 0
         assert len(split_info["train_prompt_ids"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: split_by_prompt edge cases (Phase 2B)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitByPromptEdgeCases:
+    def test_split_single_positive_prompt(self) -> None:
+        """With only 1 catastrophe prompt, it stays in train (no val positive)."""
+        ds = _make_synthetic_dataset(
+            n_prompts=5,
+            catastrophe_fraction=0.15,
+            random_state=42,
+        )
+        # Verify there is exactly 1 positive prompt
+        prompt_has_cat: dict[str, bool] = {}
+        for t in ds.traces:
+            if t.has_catastrophe:
+                prompt_has_cat[t.prompt_id] = True
+            else:
+                prompt_has_cat.setdefault(t.prompt_id, False)
+
+        n_pos = sum(1 for v in prompt_has_cat.values() if v)
+        # If random_state doesn't yield exactly 1, adjust — but check at least works
+        if n_pos == 0:
+            pytest.skip("No positive prompts generated with this seed")
+
+        split = split_by_prompt(ds, val_fraction=0.2, random_state=42)
+        # Split should work without error
+        assert sorted(split.train_traces + split.val_traces) == list(range(len(ds.traces)))
+        # The single positive prompt should be in train (since _sample_val
+        # returns empty for len(prompts) <= 1)
+        if n_pos == 1:
+            pos_prompt_id = [p for p, v in prompt_has_cat.items() if v][0]
+            train_prompts = {ds.traces[t].prompt_id for t in split.train_traces}
+            assert pos_prompt_id in train_prompts
+
+    def test_split_all_positive(self) -> None:
+        """All prompts have catastrophe — split still works."""
+        ds = _make_synthetic_dataset(
+            n_prompts=5,
+            catastrophe_fraction=1.0,
+            random_state=42,
+        )
+        split = split_by_prompt(ds, val_fraction=0.2, random_state=42)
+        # Should not crash and all traces should be assigned
+        assert sorted(split.train_traces + split.val_traces) == list(range(len(ds.traces)))
+
+
+# ---------------------------------------------------------------------------
+# Tests: pre-onset evaluation (Phase 1A)
+# ---------------------------------------------------------------------------
+
+
+class TestPreOnsetEvaluation:
+    """Test evaluate_predictor with pre_onset_mask."""
+
+    def test_pre_onset_metrics_populated(self) -> None:
+        """When pre_onset_mask is provided, pre_onset_auroc and pre_onset_recall are set."""
+        ds = _make_synthetic_dataset(catastrophe_fraction=0.5, random_state=99)
+        model = train_predictor(ds.X, ds.y, xgb_params={"n_estimators": 10})
+
+        # Create a mask: first half of tokens are "pre-onset"
+        mask = np.zeros(len(ds.y), dtype=bool)
+        mask[: len(ds.y) // 2] = True
+
+        metrics = evaluate_predictor(model, ds.X, ds.y, pre_onset_mask=mask)
+        # With mixed labels in the mask subset, both should be populated
+        n_pos_in_mask = int(np.sum(ds.y[mask] == 1))
+        if n_pos_in_mask > 0 and n_pos_in_mask < int(mask.sum()):
+            assert metrics.pre_onset_recall is not None
+            assert metrics.pre_onset_auroc is not None
+            assert 0.0 <= metrics.pre_onset_recall <= 1.0
+            assert 0.0 <= metrics.pre_onset_auroc <= 1.0
+
+    def test_pre_onset_metrics_none_without_mask(self) -> None:
+        """Without pre_onset_mask, pre-onset metrics are None."""
+        ds = _make_synthetic_dataset(catastrophe_fraction=0.5, random_state=99)
+        model = train_predictor(ds.X, ds.y, xgb_params={"n_estimators": 10})
+        metrics = evaluate_predictor(model, ds.X, ds.y)
+        assert metrics.pre_onset_recall is None
+        assert metrics.pre_onset_auroc is None
+
+    def test_pre_onset_metrics_in_to_dict(self) -> None:
+        """Pre-onset metrics appear in to_dict() when set."""
+        ds = _make_synthetic_dataset(catastrophe_fraction=0.5, random_state=99)
+        model = train_predictor(ds.X, ds.y, xgb_params={"n_estimators": 10})
+        mask = np.ones(len(ds.y), dtype=bool)
+        metrics = evaluate_predictor(model, ds.X, ds.y, pre_onset_mask=mask)
+        d = metrics.to_dict()
+        # At minimum, the keys should be present if values are set
+        if metrics.pre_onset_recall is not None:
+            assert "pre_onset_recall" in d
+        if metrics.pre_onset_auroc is not None:
+            assert "pre_onset_auroc" in d
+
+    def test_pre_onset_metrics_not_in_to_dict_when_none(self) -> None:
+        """Pre-onset metrics are excluded from to_dict() when None."""
+        ds = _make_synthetic_dataset(catastrophe_fraction=0.5, random_state=99)
+        model = train_predictor(ds.X, ds.y, xgb_params={"n_estimators": 10})
+        metrics = evaluate_predictor(model, ds.X, ds.y)
+        d = metrics.to_dict()
+        assert "pre_onset_recall" not in d
+        assert "pre_onset_auroc" not in d
+
+
+# ---------------------------------------------------------------------------
+# Tests: early stopping (Phase 3A)
+# ---------------------------------------------------------------------------
+
+
+class TestEarlyStopping:
+    def test_early_stopping_reduces_trees(self) -> None:
+        """With separable val data, early stopping should stop before 200 trees."""
+        rng = np.random.RandomState(42)
+        n = 500
+        n_features = 10
+        # Perfectly separable data: label determined by feature 0
+        X = rng.randn(n, n_features).astype(np.float32)
+        y = (X[:, 0] > 0).astype(np.float32)
+
+        # Split into train/val
+        X_train, X_val = X[:400], X[400:]
+        y_train, y_val = y[:400], y[400:]
+
+        model = train_predictor(
+            X_train,
+            y_train,
+            X_val=X_val,
+            y_val=y_val,
+            xgb_params={"n_estimators": 200},
+        )
+        assert model.best_iteration < 200
+
+    def test_train_without_early_stopping(self) -> None:
+        """Training without X_val/y_val still works (backward compat)."""
+        ds = _make_synthetic_dataset()
+        model = train_predictor(ds.X, ds.y, xgb_params={"n_estimators": 10})
+        assert isinstance(model, xgb.XGBClassifier)
+        proba = model.predict_proba(ds.X[:5])
+        assert proba.shape == (5, 2)

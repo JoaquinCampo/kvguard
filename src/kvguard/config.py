@@ -59,7 +59,7 @@ class RunResult(BaseModel):
     model: str
     press: str
     compression_ratio: float
-    max_new_tokens: int
+    max_new_tokens: int = 512
     seed: int
     generated_text: str
     ground_truth: str

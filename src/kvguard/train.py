@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import xgboost as xgb
+from loguru import logger
 from sklearn.metrics import (
     f1_score,
     precision_score,
@@ -33,6 +34,7 @@ def load_all_results(
     horizon: int = 32,
     nt_onset_frac: float = 0.75,
     rolling_window: int = 8,
+    model_filter: str | None = None,
 ) -> Dataset:
     """Load all sweep results into a flat ML dataset.
 
@@ -45,6 +47,7 @@ def load_all_results(
         horizon=horizon,
         nt_onset_frac=nt_onset_frac,
         rolling_window=rolling_window,
+        model_filter=model_filter,
     )
 
 
@@ -153,6 +156,9 @@ def split_by_prompt(
     pos_prompts = [p for p in prompt_ids if prompt_has_cat[p]]
     neg_prompts = [p for p in prompt_ids if not prompt_has_cat[p]]
 
+    if len(pos_prompts) == 1:
+        logger.warning("Only 1 positive prompt — all positive examples in train set")
+
     def _sample_val(prompts: list[str], frac: float) -> list[str]:
         n_val = max(1, int(len(prompts) * frac))
         n_val = min(n_val, len(prompts) - 1)
@@ -164,6 +170,11 @@ def split_by_prompt(
     val_prompts = set(
         _sample_val(pos_prompts, val_fraction) + _sample_val(neg_prompts, val_fraction)
     )
+
+    # Warn if no val prompt has a catastrophe
+    val_has_cat = any(prompt_has_cat.get(p, False) for p in val_prompts)
+    if val_prompts and not val_has_cat:
+        logger.warning("No validation prompt has a catastrophe — val set has no positive examples")
 
     if not val_prompts:
         n_val = max(1, int(len(prompt_ids) * val_fraction))
@@ -208,6 +219,8 @@ def train_predictor(
     X_train: np.ndarray,
     y_train: np.ndarray,
     *,
+    X_val: np.ndarray | None = None,
+    y_val: np.ndarray | None = None,
     xgb_params: dict[str, Any] | None = None,
     auto_scale_pos_weight: bool = True,
 ) -> xgb.XGBClassifier:
@@ -216,6 +229,8 @@ def train_predictor(
     Args:
         X_train: (N, D) feature matrix.
         y_train: (N,) binary labels.
+        X_val: Optional validation feature matrix for early stopping.
+        y_val: Optional validation labels for early stopping.
         xgb_params: Override default XGBoost parameters.
         auto_scale_pos_weight: If True, set scale_pos_weight = n_neg / n_pos.
 
@@ -224,6 +239,10 @@ def train_predictor(
     """
     params = {**DEFAULT_XGB_PARAMS, **(xgb_params or {})}
 
+    use_early_stopping = X_val is not None and y_val is not None
+    if use_early_stopping:
+        params.setdefault("early_stopping_rounds", 20)
+
     if auto_scale_pos_weight and "scale_pos_weight" not in params:
         n_pos = float(np.sum(y_train == 1))
         n_neg = float(np.sum(y_train == 0))
@@ -231,7 +250,10 @@ def train_predictor(
             params["scale_pos_weight"] = n_neg / n_pos
 
     clf = xgb.XGBClassifier(**params)
-    clf.fit(X_train, y_train)
+    fit_kwargs: dict[str, Any] = {}
+    if use_early_stopping:
+        fit_kwargs["eval_set"] = [(X_val, y_val)]
+    clf.fit(X_train, y_train, **fit_kwargs)
     return clf
 
 
@@ -251,9 +273,11 @@ class EvalMetrics:
     n_samples: int
     n_positive: int
     threshold: float = 0.5
+    pre_onset_recall: float | None = None
+    pre_onset_auroc: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "precision": self.precision,
             "recall": self.recall,
             "f1": self.f1,
@@ -262,6 +286,11 @@ class EvalMetrics:
             "n_positive": self.n_positive,
             "threshold": self.threshold,
         }
+        if self.pre_onset_recall is not None:
+            d["pre_onset_recall"] = self.pre_onset_recall
+        if self.pre_onset_auroc is not None:
+            d["pre_onset_auroc"] = self.pre_onset_auroc
+        return d
 
 
 def evaluate_predictor(
@@ -270,6 +299,7 @@ def evaluate_predictor(
     y_test: np.ndarray,
     *,
     threshold: float = 0.5,
+    pre_onset_mask: np.ndarray | None = None,
 ) -> EvalMetrics:
     """Evaluate trained predictor on a test set.
 
@@ -278,9 +308,12 @@ def evaluate_predictor(
         X_test: (N, D) feature matrix.
         y_test: (N,) binary labels.
         threshold: Decision threshold for binary predictions.
+        pre_onset_mask: Optional boolean mask selecting pre-onset tokens.
+            When provided, computes pre_onset_recall and pre_onset_auroc
+            on the masked subset.
 
     Returns:
-        EvalMetrics with precision, recall, F1, AUROC.
+        EvalMetrics with precision, recall, F1, AUROC, and optional pre-onset metrics.
     """
     y_prob = model.predict_proba(X_test)[:, 1]
     y_pred = (y_prob >= threshold).astype(int)
@@ -292,6 +325,21 @@ def evaluate_predictor(
     else:
         auroc = float(roc_auc_score(y_test, y_prob))
 
+    # Pre-onset metrics
+    pre_onset_recall: float | None = None
+    pre_onset_auroc: float | None = None
+    if pre_onset_mask is not None:
+        y_pre = y_test[pre_onset_mask]
+        y_prob_pre = y_prob[pre_onset_mask]
+        y_pred_pre = y_pred[pre_onset_mask]
+        n_pre_pos = int(np.sum(y_pre == 1))
+        if len(y_pre) > 0 and n_pre_pos > 0:
+            pre_onset_recall = float(recall_score(y_pre, y_pred_pre, zero_division=0.0))
+            if n_pre_pos < len(y_pre):
+                pre_onset_auroc = float(roc_auc_score(y_pre, y_prob_pre))
+            else:
+                pre_onset_auroc = 0.0
+
     return EvalMetrics(
         precision=float(precision_score(y_test, y_pred, zero_division=0.0)),
         recall=float(recall_score(y_test, y_pred, zero_division=0.0)),
@@ -300,6 +348,8 @@ def evaluate_predictor(
         n_samples=len(y_test),
         n_positive=n_pos,
         threshold=threshold,
+        pre_onset_recall=pre_onset_recall,
+        pre_onset_auroc=pre_onset_auroc,
     )
 
 
@@ -433,6 +483,7 @@ def run_training(
     xgb_params: dict[str, Any] | None = None,
     run_cv: bool = True,
     output_dir: Path | None = None,
+    model_filter: str | None = None,
 ) -> TrainOutput:
     """End-to-end training pipeline.
 
@@ -453,6 +504,7 @@ def run_training(
         xgb_params: Override XGBoost parameters.
         run_cv: Whether to run leave-one-compressor-out CV.
         output_dir: If set, save model + metrics here.
+        model_filter: If set, only include traces where ``run.model`` matches.
 
     Returns:
         TrainOutput with model, metrics, and split info.
@@ -462,6 +514,7 @@ def run_training(
         num_prompts=num_prompts,
         horizon=horizon,
         nt_onset_frac=nt_onset_frac,
+        model_filter=model_filter,
     )
 
     split = split_by_prompt(ds, val_fraction=val_fraction, random_state=random_state)
@@ -471,9 +524,38 @@ def run_training(
     X_val = ds.X[split.val_mask]
     y_val = ds.y[split.val_mask]
 
-    model = train_predictor(X_train, y_train, xgb_params=xgb_params)
+    # Compute pre-onset mask for validation tokens.
+    # A token is "pre-onset" if its trace has no catastrophe (onset == -1)
+    # or its position within the trace is before the onset position.
+    val_pre_onset_mask: np.ndarray | None = None
+    if len(ds.onset_positions) > 0:
+        val_onset = ds.onset_positions[split.val_mask]
+        val_trace_ids = ds.trace_ids[split.val_mask]
+        # Compute per-token position within its trace
+        # For each token, position = cumulative count within its trace
+        token_positions = np.zeros(len(val_trace_ids), dtype=np.int32)
+        if len(val_trace_ids) > 0:
+            # Detect trace boundaries and compute position within trace
+            prev_trace = -1
+            pos = 0
+            for i in range(len(val_trace_ids)):
+                if val_trace_ids[i] != prev_trace:
+                    pos = 0
+                    prev_trace = val_trace_ids[i]
+                token_positions[i] = pos
+                pos += 1
+        # Pre-onset: no catastrophe (onset == -1) OR position < onset
+        val_pre_onset_mask = (val_onset == -1) | (token_positions < val_onset)
+
+    model = train_predictor(
+        X_train,
+        y_train,
+        X_val=X_val,
+        y_val=y_val,
+        xgb_params=xgb_params,
+    )
     train_metrics = evaluate_predictor(model, X_train, y_train)
-    val_metrics = evaluate_predictor(model, X_val, y_val)
+    val_metrics = evaluate_predictor(model, X_val, y_val, pre_onset_mask=val_pre_onset_mask)
 
     cv_result = leave_one_out_cv(ds, xgb_params=xgb_params) if run_cv else None
 

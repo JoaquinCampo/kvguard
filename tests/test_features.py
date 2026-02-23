@@ -436,3 +436,90 @@ class TestFeatureExclusion:
         assert len(ds.traces) == len(self.ds.traces)
         np.testing.assert_array_equal(ds.y, self.ds.y)
         np.testing.assert_array_equal(ds.trace_ids, self.ds.trace_ids)
+
+
+# ---------------------------------------------------------------------------
+# Tests: signal count validation in build_dataset (Phase 2A)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDatasetSignalValidation:
+    def test_build_dataset_signal_count_mismatch(self, tmp_path: Path) -> None:
+        """Trace with fewer signals than num_tokens_generated is skipped."""
+        # Bad trace: claims 20 tokens but only 5 signals
+        bad = _make_result_json(n_tokens=5, prompt_id="bad")
+        bad["num_tokens_generated"] = 20  # mismatch: 20 tokens, 5 signals
+
+        # Good trace: signals match num_tokens_generated
+        good = _make_result_json(n_tokens=10, prompt_id="good")
+
+        _write_result_file(tmp_path, "none", 0.0, [bad, good])
+        ds = build_dataset(tmp_path, num_prompts=50, horizon=32)
+
+        # Only the good trace should be present
+        assert len(ds.traces) == 1
+        assert ds.traces[0].prompt_id == "good"
+        assert ds.X.shape[0] == 10
+
+    def test_build_dataset_zero_signals(self, tmp_path: Path) -> None:
+        """Trace with num_tokens_generated=10 but empty signals is skipped."""
+        bad = _make_result_json(n_tokens=0, prompt_id="empty_sigs")
+        bad["num_tokens_generated"] = 10  # claims 10 tokens
+        bad["signals"] = []  # no signals at all
+
+        good = _make_result_json(n_tokens=8, prompt_id="valid")
+
+        _write_result_file(tmp_path, "none", 0.0, [bad, good])
+        ds = build_dataset(tmp_path, num_prompts=50, horizon=32)
+
+        assert len(ds.traces) == 1
+        assert ds.traces[0].prompt_id == "valid"
+        assert ds.X.shape[0] == 8
+
+
+# ---------------------------------------------------------------------------
+# Tests: onset_positions in Dataset (Phase 1A)
+# ---------------------------------------------------------------------------
+
+
+class TestDatasetOnsetPositions:
+    def test_dataset_onset_positions_populated(self, tmp_path: Path) -> None:
+        """build_dataset returns onset_positions with correct shape and values."""
+        results = [
+            _make_result_json(
+                n_tokens=100,
+                press="snapkv",
+                compression_ratio=0.5,
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 50},
+                prompt_id="p0",
+            ),
+            _make_result_json(
+                n_tokens=50,
+                press="snapkv",
+                compression_ratio=0.5,
+                prompt_id="p1",
+            ),
+        ]
+        _write_result_file(tmp_path, "snapkv", 0.5, results)
+        ds = build_dataset(tmp_path, num_prompts=50, horizon=32)
+
+        assert ds.onset_positions.shape == (150,)
+        # First trace (100 tokens) has looping onset at 50
+        assert np.all(ds.onset_positions[:100] == 50)
+        # Second trace (50 tokens) has no catastrophe → -1
+        assert np.all(ds.onset_positions[100:] == -1)
+
+    def test_drop_features_preserves_onset_positions(self, tmp_path: Path) -> None:
+        """drop_features copies onset_positions to new Dataset."""
+        results = [
+            _make_result_json(
+                n_tokens=20,
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 10},
+            )
+        ]
+        _write_result_file(tmp_path, "none", 0.0, results)
+        ds = build_dataset(tmp_path, num_prompts=50, horizon=32)
+        ds2 = ds.drop_features(["compression_ratio"])
+        np.testing.assert_array_equal(ds2.onset_positions, ds.onset_positions)
