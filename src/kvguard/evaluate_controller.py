@@ -10,7 +10,6 @@ For each trace at aggressive compression that has a catastrophe, this module:
 This produces CFR-reduction curves: controlled-CFR vs compressor-only-CFR at each budget level.
 """
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,15 +17,9 @@ from typing import Any
 import numpy as np
 import xgboost as xgb
 
-from kvguard.config import RunResult
-from kvguard.controller import ControllerConfig, Mode, RiskController
+from kvguard.controller import ControllerConfig, Mode
 from kvguard.features import (
-    N_BASE,
-    ROLLING_COL_INDICES,
-    ROLLING_COLS,
-    ROLLING_STATS,
     ROLLING_WINDOW,
-    _rolling_stat,
     add_rolling_features,
     flatten_signals,
     load_result_file,
@@ -444,7 +437,8 @@ def format_eval_table(result: EvalResult) -> str:
         mt = f"{b.mean_trigger_token:.0f}" if b.mean_trigger_token is not None else "-"
         lines.append(
             f"{b.press:<22} {b.compression_ratio:>5.3f} "
-            f"{b.baseline_cfr_count:>3}/{b.n_prompts:<3} {b.controlled_cfr_count:>3}/{b.n_prompts:<3} "
+            f"{b.baseline_cfr_count:>3}/{b.n_prompts:<3} "
+            f"{b.controlled_cfr_count:>3}/{b.n_prompts:<3} "
             f"{b.cfr_reduction_pct:>6.1f}% "
             f"{b.catastrophes_prevented:>5}/{b.baseline_cfr_count:<3} "
             f"{b.controller_triggered_count:>5}/{b.n_prompts:<3} "
