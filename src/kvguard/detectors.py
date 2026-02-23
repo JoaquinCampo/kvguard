@@ -25,22 +25,75 @@ def detect_looping(token_ids: list[int], window_size: int = 20, min_repeats: int
     return False
 
 
+def detect_looping_onset(
+    token_ids: list[int], window_size: int = 20, min_repeats: int = 3
+) -> int | None:
+    """Find the token position where looping begins.
+
+    Returns the start index of the first window whose occurrence count reaches
+    `min_repeats`, or None if no looping is detected. The onset is the start of
+    the second occurrence — the first time the model repeats instead of producing
+    new content.
+    """
+    if len(token_ids) < window_size * min_repeats:
+        return None
+
+    window_positions: dict[tuple[int, ...], list[int]] = {}
+    for i in range(len(token_ids) - window_size + 1):
+        window = tuple(token_ids[i : i + window_size])
+        positions = window_positions.setdefault(window, [])
+        positions.append(i)
+        if len(positions) >= min_repeats:
+            return positions[1]
+
+    return None
+
+
+def detect_catastrophe_onsets(
+    token_ids: list[int],
+    stop_reason: str,
+    catastrophes: list[str],
+) -> dict[str, int]:
+    """Determine the onset position for each detected catastrophe.
+
+    Returns a dict mapping catastrophe type to the token index where it begins.
+    """
+    onsets: dict[str, int] = {}
+
+    if "looping" in catastrophes:
+        onset = detect_looping_onset(token_ids)
+        if onset is not None:
+            onsets["looping"] = onset
+
+    if "non_termination" in catastrophes:
+        # Non-termination onset: the last token position (the whole trace
+        # failed to stop, so onset is effectively the end of generation).
+        onsets["non_termination"] = len(token_ids) - 1
+
+    # wrong_answer has no meaningful onset position — the error is only
+    # detectable after the full answer is produced.
+
+    return onsets
+
+
 def parse_gsm8k_answer(text: str) -> str | None:
     """Extract the final numeric answer from model output.
 
     Supports two formats:
     - GSM8K canonical: #### NUMBER
     - LaTeX boxed (instruction-tuned models): \\boxed{NUMBER}
-    """
-    # Try #### format first
-    match = re.search(r"####\s*([\d,.\-]+)", text)
-    if match:
-        return match.group(1).replace(",", "").strip()
 
-    # Try \\boxed{NUMBER} format (common in instruction-tuned models)
-    match = re.search(r"\\boxed\{([\d,.\-]+)\}", text)
-    if match:
-        return match.group(1).replace(",", "").strip()
+    Takes the LAST match (model may reference #### in intermediate reasoning).
+    """
+    # Try #### format — take last match
+    matches: list[str] = re.findall(r"####\s*([\d,.\-]+)", text)
+    if matches:
+        return matches[-1].replace(",", "").strip()
+
+    # Try \\boxed{NUMBER} format — take last match
+    matches = re.findall(r"\\boxed\{([\d,.\-]+)\}", text)
+    if matches:
+        return matches[-1].replace(",", "").strip()
 
     return None
 
