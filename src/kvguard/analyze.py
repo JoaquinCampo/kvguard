@@ -6,19 +6,21 @@ Supports both old (5-field) and new (11-field HALT) signal formats.
 import json
 import statistics
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
 
-def load_results(path: Path) -> dict:
+def load_results(path: Path) -> dict[str, Any]:
     """Load a results JSON file."""
-    return json.loads(path.read_text())
+    result: dict[str, Any] = json.loads(path.read_text())
+    return result
 
 
 def load_all_results(
     result_dir: Path = Path("results"),
     prompt_filter: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Load all result files, optionally filtering by prompt count."""
     files = sorted(result_dir.rglob("*.json"))
     out = []
@@ -34,7 +36,8 @@ def load_all_results(
 # Per-config signal statistics
 # ---------------------------------------------------------------------------
 
-def signal_stats(results: list[dict]) -> dict:
+
+def signal_stats(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute aggregate signal statistics across all results in one config."""
     all_entropy: list[float] = []
     all_top1: list[float] = []
@@ -107,6 +110,7 @@ def signal_stats(results: list[dict]) -> dict:
 # Degradation curve: accuracy & CFR vs compression ratio
 # ---------------------------------------------------------------------------
 
+
 def degradation_table(result_dir: Path = Path("results"), num_prompts: int = 50) -> None:
     """Print degradation curve table: accuracy & CFR by method × ratio."""
     all_data = load_all_results(result_dir, prompt_filter=num_prompts)
@@ -120,18 +124,20 @@ def degradation_table(result_dir: Path = Path("results"), num_prompts: int = 50)
         cfg = data["config"]
         s = data["summary"]
         sig = signal_stats(data["results"])
-        rows.append({
-            "press": cfg["press_name"],
-            "ratio": cfg["compression_ratio"],
-            "n": s["total"],
-            "accuracy": s.get("accuracy", 0),
-            "cfr": s.get("catastrophic_failure_rate", 0),
-            "non_term": s.get("catastrophe_counts", {}).get("non_termination", 0),
-            "looping": s.get("catastrophe_counts", {}).get("looping", 0),
-            "wrong": s.get("catastrophe_counts", {}).get("wrong_answer", 0),
-            "avg_tokens": s.get("avg_tokens", 0),
-            **sig,
-        })
+        rows.append(
+            {
+                "press": cfg["press_name"],
+                "ratio": cfg["compression_ratio"],
+                "n": s["total"],
+                "accuracy": s.get("accuracy", 0),
+                "cfr": s.get("catastrophic_failure_rate", 0),
+                "non_term": s.get("catastrophe_counts", {}).get("non_termination", 0),
+                "looping": s.get("catastrophe_counts", {}).get("looping", 0),
+                "wrong": s.get("catastrophe_counts", {}).get("wrong_answer", 0),
+                "avg_tokens": s.get("avg_tokens", 0),
+                **sig,
+            }
+        )
 
     rows.sort(key=lambda r: (r["press"], r["ratio"]))
 
@@ -157,6 +163,7 @@ def degradation_table(result_dir: Path = Path("results"), num_prompts: int = 50)
 # ---------------------------------------------------------------------------
 # DeltaH early warning analysis
 # ---------------------------------------------------------------------------
+
 
 def delta_h_analysis(result_dir: Path = Path("results"), num_prompts: int = 50) -> None:
     """Analyze whether DeltaH gives earlier warning than raw entropy.
@@ -231,15 +238,17 @@ def delta_h_analysis(result_dir: Path = Path("results"), num_prompts: int = 50) 
             if entropy_warn is not None and delta_warn is not None:
                 lead_time = entropy_warn - delta_warn  # positive = delta_h warns earlier
 
-            results_table.append({
-                "press": cfg["press_name"],
-                "ratio": cfg["compression_ratio"],
-                "prompt": r["prompt_id"],
-                "cats": ",".join(r["catastrophes"]),
-                "entropy_warn_t": entropy_warn,
-                "delta_warn_t": delta_warn,
-                "lead_time": lead_time,
-            })
+            results_table.append(
+                {
+                    "press": cfg["press_name"],
+                    "ratio": cfg["compression_ratio"],
+                    "prompt": r["prompt_id"],
+                    "cats": ",".join(r["catastrophes"]),
+                    "entropy_warn_t": entropy_warn,
+                    "delta_warn_t": delta_warn,
+                    "lead_time": lead_time,
+                }
+            )
 
     if not results_table:
         print("No failing runs found in compressed configs.")
@@ -264,7 +273,7 @@ def delta_h_analysis(result_dir: Path = Path("results"), num_prompts: int = 50) 
     # Per-method breakdown
     print(f"\n{'Press':<18s} {'Ratio':>5s} {'Failures':>8s} {'DH first':>8s} {'H first':>8s}")
     print("-" * 60)
-    by_config = {}
+    by_config: dict[tuple[str, float], list[dict[str, Any]]] = {}
     for r in results_table:
         key = (r["press"], r["ratio"])
         by_config.setdefault(key, []).append(r)
@@ -280,8 +289,10 @@ def delta_h_analysis(result_dir: Path = Path("results"), num_prompts: int = 50) 
 # Silent failure analysis (reasoning corruption without looping)
 # ---------------------------------------------------------------------------
 
+
 def silent_failure_analysis(
-    result_dir: Path = Path("results"), num_prompts: int = 50,
+    result_dir: Path = Path("results"),
+    num_prompts: int = 50,
 ) -> None:
     """Analyze whether logit signals can distinguish silent failures.
 
@@ -291,9 +302,9 @@ def silent_failure_analysis(
     all_data = load_all_results(result_dir, prompt_filter=num_prompts)
     compressed = [d for d in all_data if d["config"]["press_name"] != "none"]
 
-    silent: list[dict] = []
-    loud: list[dict] = []
-    correct: list[dict] = []
+    silent: list[dict[str, Any]] = []
+    loud: list[dict[str, Any]] = []
+    correct: list[dict[str, Any]] = []
 
     for data in compressed:
         for r in data["results"]:
@@ -341,7 +352,7 @@ def silent_failure_analysis(
         print(f"{feat:<20s} {_fmt(vals_c):>10s} {_fmt(vals_s):>10s} {_fmt(vals_l):>10s}")
 
 
-def _per_run_signal_stats(sigs: list[dict]) -> dict:
+def _per_run_signal_stats(sigs: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute signal stats for a single run's token signals."""
     entropies = [s["entropy"] for s in sigs]
     top1s = [s["top1_prob"] for s in sigs]
@@ -349,7 +360,7 @@ def _per_run_signal_stats(sigs: list[dict]) -> dict:
     h_alts_vals = [s["h_alts"] for s in sigs if "h_alts" in s]
     think = sum(1 for s in sigs if s.get("is_thinking_token", False))
 
-    stats: dict = {
+    stats: dict[str, Any] = {
         "max_entropy": max(entropies),
         "mean_entropy": statistics.mean(entropies),
         "min_top1": min(top1s),
@@ -368,6 +379,7 @@ def _per_run_signal_stats(sigs: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 # Rolling DeltaH threshold detector (ERGO-style)
 # ---------------------------------------------------------------------------
+
 
 def rolling_delta_h_detector(
     result_dir: Path = Path("results"),
@@ -410,7 +422,7 @@ def rolling_delta_h_detector(
     print(f"  Max: {max(baseline_rolling_dhs):.4f}")
     for p in percentiles:
         idx = int(p / 100 * len(sorted_baseline))
-        print(f"  P{p}: {sorted_baseline[min(idx, len(sorted_baseline)-1)]:.4f}")
+        print(f"  P{p}: {sorted_baseline[min(idx, len(sorted_baseline) - 1)]:.4f}")
     print()
 
     # Evaluate each threshold on compressed runs
@@ -454,7 +466,7 @@ def rolling_delta_h_detector(
         )
 
 
-def _rolling_entropy(sigs: list[dict], window: int) -> list[float]:
+def _rolling_entropy(sigs: list[dict[str, Any]], window: int) -> list[float]:
     """Compute rolling average entropy over a window."""
     entropies = [s["entropy"] for s in sigs]
     if len(entropies) < window:
@@ -468,6 +480,7 @@ def _rolling_entropy(sigs: list[dict], window: int) -> list[float]:
 # ---------------------------------------------------------------------------
 # CLI-compatible entry points
 # ---------------------------------------------------------------------------
+
 
 def compare_runs(result_dir: Path = Path("results"), num_prompts: int | None = None) -> None:
     """Print a comparison table across all result files."""
@@ -485,21 +498,23 @@ def compare_runs(result_dir: Path = Path("results"), num_prompts: int | None = N
         s = data["summary"]
         sig = signal_stats(data["results"])
 
-        rows.append({
-            "press": cfg["press_name"],
-            "ratio": cfg["compression_ratio"],
-            "n": s["total"],
-            "accuracy": s.get("accuracy", 0),
-            "cfr": s.get("catastrophic_failure_rate", 0),
-            "non_term": s.get("catastrophe_counts", {}).get("non_termination", 0),
-            "looping": s.get("catastrophe_counts", {}).get("looping", 0),
-            "wrong": s.get("catastrophe_counts", {}).get("wrong_answer", 0),
-            "mean_entropy": sig.get("mean_entropy", 0),
-            "max_entropy": sig.get("max_entropy", 0),
-            "max_abs_dh": sig.get("max_abs_delta_h", 0),
-            "think_pct": sig.get("thinking_token_pct", 0),
-            "min_top1": sig.get("min_top1", 0),
-        })
+        rows.append(
+            {
+                "press": cfg["press_name"],
+                "ratio": cfg["compression_ratio"],
+                "n": s["total"],
+                "accuracy": s.get("accuracy", 0),
+                "cfr": s.get("catastrophic_failure_rate", 0),
+                "non_term": s.get("catastrophe_counts", {}).get("non_termination", 0),
+                "looping": s.get("catastrophe_counts", {}).get("looping", 0),
+                "wrong": s.get("catastrophe_counts", {}).get("wrong_answer", 0),
+                "mean_entropy": sig.get("mean_entropy", 0),
+                "max_entropy": sig.get("max_entropy", 0),
+                "max_abs_dh": sig.get("max_abs_delta_h", 0),
+                "think_pct": sig.get("thinking_token_pct", 0),
+                "min_top1": sig.get("min_top1", 0),
+            }
+        )
 
     rows.sort(key=lambda r: (r["press"], r["ratio"]))
 

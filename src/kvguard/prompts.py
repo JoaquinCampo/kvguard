@@ -69,12 +69,12 @@ def load_gsm8k(num_prompts: int, seed: int = 42) -> list[dict[str, str]]:
         if i >= num_prompts:
             break
         # Extract ground truth answer (after ####)
-        answer_text = row["answer"]  # type: ignore[index]
+        answer_text = row["answer"]
         gt = answer_text.split("####")[-1].strip().replace(",", "")
         prompts.append(
             {
                 "id": f"gsm8k_{i}",
-                "question": row["question"],  # type: ignore[index]
+                "question": row["question"],
                 "ground_truth": gt,
                 "full_answer": answer_text,
             }

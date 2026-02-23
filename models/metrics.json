@@ -1,0 +1,99 @@
+{
+  "horizon": 32,
+  "nt_onset_frac": 0.75,
+  "train": {
+    "precision": 0.6216924286088551,
+    "recall": 0.9427549841086391,
+    "f1": 0.7492787944025834,
+    "auroc": 0.9842158038296305,
+    "n_samples": 211824,
+    "n_positive": 27688,
+    "threshold": 0.5
+  },
+  "val": {
+    "precision": 0.5409152608105487,
+    "recall": 0.7935988620199147,
+    "f1": 0.6433348708487084,
+    "auroc": 0.944541956862186,
+    "n_samples": 51414,
+    "n_positive": 7030,
+    "threshold": 0.5
+  },
+  "cv": {
+    "mean_auroc": 0.8983140670650893,
+    "mean_f1": 0.39817029711588614,
+    "folds": [
+      {
+        "held_out_press": "none",
+        "train_presses": [
+          "observed_attention",
+          "snapkv",
+          "streaming_llm"
+        ],
+        "metrics": {
+          "precision": 0.23195876288659795,
+          "recall": 0.84375,
+          "f1": 0.3638814016172507,
+          "auroc": 0.9704512154112221,
+          "n_samples": 15932,
+          "n_positive": 320,
+          "threshold": 0.5
+        }
+      },
+      {
+        "held_out_press": "observed_attention",
+        "train_presses": [
+          "none",
+          "snapkv",
+          "streaming_llm"
+        ],
+        "metrics": {
+          "precision": 0.21077006901561932,
+          "recall": 0.536275415896488,
+          "f1": 0.3026075619295958,
+          "auroc": 0.8733217585821141,
+          "n_samples": 80470,
+          "n_positive": 4328,
+          "threshold": 0.5
+        }
+      },
+      {
+        "held_out_press": "snapkv",
+        "train_presses": [
+          "none",
+          "observed_attention",
+          "streaming_llm"
+        ],
+        "metrics": {
+          "precision": 0.6317793172314797,
+          "recall": 0.763740616394432,
+          "f1": 0.6915207924173854,
+          "auroc": 0.899169402849563,
+          "n_samples": 88351,
+          "n_positive": 26509,
+          "threshold": 0.5
+        }
+      },
+      {
+        "held_out_press": "streaming_llm",
+        "train_presses": [
+          "none",
+          "observed_attention",
+          "snapkv"
+        ],
+        "metrics": {
+          "precision": 0.15536543187403296,
+          "recall": 0.4793597304128054,
+          "f1": 0.23467143249931263,
+          "auroc": 0.8503138914174582,
+          "n_samples": 78485,
+          "n_positive": 3561,
+          "threshold": 0.5
+        }
+      }
+    ]
+  },
+  "n_traces": 800,
+  "n_tokens": 263238,
+  "positive_rate": 0.1318882554769516
+}

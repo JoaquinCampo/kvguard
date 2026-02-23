@@ -16,6 +16,7 @@ class ExperimentConfig(BaseSettings):
     device: str = "auto"  # auto | cpu | cuda | mps
     output_dir: Path = Path("results")
     num_fewshot: int = 3
+    prompt_timeout_seconds: float = 300.0  # kill generation if a single prompt exceeds this
 
     def resolve_device(self) -> str:
         if self.device != "auto":
@@ -45,6 +46,9 @@ class TokenSignals(BaseModel):
     # Temporal feature (computed from consecutive tokens)
     delta_h: float | None = None  # H(t) - H(t-1), None for first token
 
+    # Repetition feature (computed from token sequence, not logits)
+    rep_count: int = 0  # times the window ending here appeared before in the sequence
+
     # Token classification
     is_thinking_token: bool = False
 
@@ -65,4 +69,5 @@ class RunResult(BaseModel):
     catastrophes: list[str]
     num_tokens_generated: int
     cache_size_after_prefill: int | None
+    catastrophe_onsets: dict[str, int] = {}  # catastrophe_type -> token position of onset
     signals: list[TokenSignals]

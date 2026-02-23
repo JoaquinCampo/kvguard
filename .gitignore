@@ -11,3 +11,9 @@ wheels/
 
 # Experiment output
 results/
+
+# IDE / editor
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.DS_Store

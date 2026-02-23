@@ -1,0 +1,120 @@
+\begin{thebibliography}{15}
+\providecommand{\natexlab}[1]{#1}
+
+\bibitem[{Bogdan et~al.(2025)Bogdan, Macar, Nanda, and
+  Conmy}]{thought_anchors2025}
+Paul~C. Bogdan, Uzay Macar, Neel Nanda, and Arthur Conmy. 2025.
+\newblock \href {https://arxiv.org/abs/2506.19143} {Thought anchors: Which
+  {LLM} reasoning steps matter?}
+\newblock \emph{arXiv preprint arXiv:2506.19143}.
+
+\bibitem[{Cai et~al.(2024)Cai, Zhang, Gao, Liu, Li, Liu, Lu, Xiong, Dong, Hu,
+  and Xiao}]{pyramidkv2024}
+Zefan Cai, Yichi Zhang, Bofei Gao, Yuliang Liu, Yucheng Li, Tianyu Liu, Keming
+  Lu, Wayne Xiong, Yue Dong, Junjie Hu, and Wen Xiao. 2024.
+\newblock \href {https://arxiv.org/abs/2406.02069} {{PyramidKV}: Dynamic {KV}
+  cache compression based on pyramidal information funneling}.
+\newblock \emph{arXiv preprint arXiv:2406.02069}.
+
+\bibitem[{Feng et~al.(2025)Feng, Guo, Lv, Zhou, and Xie}]{defensivekv2025}
+Yuan Feng, Haoyu Guo, JunLin Lv, S.~Kevin Zhou, and Xike Xie. 2025.
+\newblock \href {https://arxiv.org/abs/2510.13334} {Taming the fragility of
+  {KV} cache eviction in {LLM} inference}.
+\newblock \emph{arXiv preprint arXiv:2510.13334}.
+
+\bibitem[{Gao et~al.(2025)Gao, Zhou, Sun, Zhang, and Wen}]{rethinking_kv2025}
+Wei Gao, Xinyu Zhou, Peng Sun, Tianwei Zhang, and Yonggang Wen. 2025.
+\newblock \href {https://arxiv.org/abs/2503.24000} {Rethinking key-value cache
+  compression techniques for large language model serving}.
+\newblock \emph{arXiv preprint arXiv:2503.24000}.
+
+\bibitem[{Jacobson and Karels(1988)}]{tcp_reno}
+Van Jacobson and Michael~J. Karels. 1988.
+\newblock \href {https://doi.org/10.1145/52324.52356} {Congestion avoidance and
+  control}.
+\newblock In \emph{Proceedings of the {ACM} {SIGCOMM} Conference on
+  Communications Architectures and Protocols}, pages 314--329. ACM.
+
+\bibitem[{Khalid et~al.(2025)Khalid, Jeyaganthan, Do, Fu, O'Brien, Sharma, and
+  Zhu}]{ergo2025}
+Haziq~Mohammad Khalid, Athikash Jeyaganthan, Timothy Do, Yicheng Fu, Sean
+  O'Brien, Vasu Sharma, and Kevin Zhu. 2025.
+\newblock \href {https://arxiv.org/abs/2510.14077} {{ERGO}: Entropy-guided
+  resetting for generation optimization in multi-turn language models}.
+\newblock In \emph{Proceedings of the 2nd Workshop on Uncertainty Aware {NLP}
+  ({UncertaiNLP})}, pages 273--286. Association for Computational Linguistics.
+
+\bibitem[{Li et~al.(2024)Li, Huang, Yang, Venkitesh, Locatelli, Ye, Cai, Lewis,
+  and Chen}]{snapkv2024}
+Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli,
+  Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. 2024.
+\newblock \href {https://arxiv.org/abs/2404.14469} {{SnapKV}: {LLM} knows what
+  you are looking for before generation}.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~37.
+
+\bibitem[{Metinov et~al.(2024)Metinov, Kudakeeva, Nursultan, and
+  Kabaeva}]{asr_kf_egr2024}
+Adilet Metinov, Gulida~M. Kudakeeva, Bolotbek~uulu Nursultan, and Gulnara~D.
+  Kabaeva. 2024.
+\newblock \href {https://arxiv.org/abs/2512.11221} {Adaptive soft rolling {KV}
+  freeze with entropy-guided recovery: Sublinear memory growth for efficient
+  {LLM} inference}.
+\newblock \emph{arXiv preprint arXiv:2512.11221}.
+
+\bibitem[{Qian et~al.(2025)Qian, Liu, Wen, Bai, Liu, and
+  Shao}]{reasoning_dynamics2025}
+Chen Qian, Dongrui Liu, Haochen Wen, Zhen Bai, Yong Liu, and Jing Shao. 2025.
+\newblock \href {https://arxiv.org/abs/2506.02867} {Demystifying reasoning
+  dynamics with mutual information: Thinking tokens are information peaks in
+  {LLM} reasoning}.
+\newblock \emph{arXiv preprint arXiv:2506.02867}.
+
+\bibitem[{Ramachandran et~al.(2025)Ramachandran, Neseem, Sakr, Venkatesan,
+  Khailany, and Krishna}]{thinkv2025}
+Akshat Ramachandran, Marina Neseem, Charbel Sakr, Rangharajan Venkatesan,
+  Brucek Khailany, and Tushar Krishna. 2025.
+\newblock \href {https://arxiv.org/abs/2510.01290} {{ThinKV}: Thought-adaptive
+  {KV} cache compression for efficient reasoning models}.
+\newblock \emph{arXiv preprint arXiv:2510.01290}.
+
+\bibitem[{Shapiro et~al.(2026)Shapiro, Taneja, and Goel}]{halt2024}
+Ahmad Shapiro, Karan Taneja, and Ashok Goel. 2026.
+\newblock \href {https://arxiv.org/abs/2602.02888} {{HALT}: Hallucination
+  assessment via log-probs as time series}.
+\newblock \emph{arXiv preprint arXiv:2602.02888}.
+
+\bibitem[{Xiao et~al.(2024)Xiao, Tian, Chen, Han, and Lewis}]{streamingllm2024}
+Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. 2024.
+\newblock \href {https://arxiv.org/abs/2309.17453} {Efficient streaming
+  language models with attention sinks}.
+\newblock In \emph{International Conference on Learning Representations}.
+
+\bibitem[{Xiong et~al.(2025)Xiong, Shen, Ye, Tao, Wan, Lu, Wu, Zheng, Guo,
+  Yang, Kong, and Wong}]{uncomp2024}
+Jing Xiong, Jianghan Shen, Fanghua Ye, Chaofan Tao, Zhongwei Wan, Jianqiao Lu,
+  Xun Wu, Chuanyang Zheng, Zhijiang Guo, Min Yang, Lingpeng Kong, and Ngai
+  Wong. 2025.
+\newblock \href {https://arxiv.org/abs/2410.03090} {{UNComp}: Can matrix
+  entropy uncover sparsity? {A} compressor design from an uncertainty-aware
+  perspective}.
+\newblock In \emph{Proceedings of the Conference on Empirical Methods in
+  Natural Language Processing}.
+
+\bibitem[{Xu et~al.(2024)Xu, Goyal, and Choi}]{refreshkv2024}
+Fangyuan Xu, Tanya Goyal, and Eunsol Choi. 2024.
+\newblock \href {https://arxiv.org/abs/2411.05787} {{RefreshKV}: Updating small
+  {KV} cache during long-form generation}.
+\newblock \emph{arXiv preprint arXiv:2411.05787}.
+
+\bibitem[{Zhang et~al.(2023)Zhang, Sheng, Zhou, Chen, Zheng, Cai, Song, Tian,
+  R\'{e}, Barrett, Wang, and Chen}]{h2o2023}
+Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai,
+  Zhao Song, Yuandong Tian, Christopher R\'{e}, Clark Barrett, Zhangyang Wang,
+  and Beidi Chen. 2023.
+\newblock \href {https://arxiv.org/abs/2306.14048} {{H$_2$O}: Heavy-hitter
+  oracle for efficient generative inference of large language models}.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~36.
+
+\end{thebibliography}

@@ -8,19 +8,76 @@ from kvguard.config import TokenSignals
 # Thinking tokens: transitional words that carry disproportionate reasoning
 # content. From "Demystifying Reasoning Dynamics" (2506.02867) — suppressing
 # these 1-5% of tokens degrades reasoning; suppressing random tokens doesn't.
-THINKING_TOKENS = frozenset({
-    "so", "wait", "therefore", "hmm", "let", "first", "but",
-    "thus", "hence", "now", "next", "then", "however", "since",
-    "because", "given", "note", "recall", "consider", "if",
-    "ok", "okay", "well", "right", "actually", "alternatively",
-    "step", "finally", "suppose", "assume", "check", "verify",
-})
+THINKING_TOKENS = frozenset(
+    {
+        "so",
+        "wait",
+        "therefore",
+        "hmm",
+        "let",
+        "first",
+        "but",
+        "thus",
+        "hence",
+        "now",
+        "next",
+        "then",
+        "however",
+        "since",
+        "because",
+        "given",
+        "note",
+        "recall",
+        "consider",
+        "if",
+        "ok",
+        "okay",
+        "well",
+        "right",
+        "actually",
+        "alternatively",
+        "step",
+        "finally",
+        "suppose",
+        "assume",
+        "check",
+        "verify",
+    }
+)
+
+
+def compute_repetition_counts(token_ids: list[int], window_size: int = 20) -> list[int]:
+    """Compute per-token repetition count from the generated token sequence.
+
+    For each position t, counts how many times the window of `window_size` tokens
+    ending at t has appeared earlier in the sequence. Positions before the first
+    full window get 0.
+
+    Returns a list of length len(token_ids) with the count for each position.
+    """
+    n = len(token_ids)
+    counts: list[int] = [0] * n
+
+    if n < window_size:
+        return counts
+
+    # Track window occurrences: window_tuple -> list of start positions
+    window_seen: dict[tuple[int, ...], int] = {}
+    for i in range(n - window_size + 1):
+        window = tuple(token_ids[i : i + window_size])
+        prev = window_seen.get(window, 0)
+        # Position of the last token in this window
+        end_pos = i + window_size - 1
+        counts[end_pos] = prev
+        window_seen[window] = prev + 1
+
+    return counts
 
 
 def extract_signals(
     logits: torch.Tensor,
     chosen_token_id: int,
-    tokenizer: object,
+    tokenizer: object,  # AutoTokenizer (untyped third-party)
     prev_entropy: float | None = None,
 ) -> TokenSignals:
     """Extract the HALT-inspired feature vector from logits at a single step.
@@ -55,7 +112,7 @@ def extract_signals(
     top_probs = probs[top_idx]
     top1_prob = top_probs[0].item()
     top5_prob = top_probs[:5].sum().item()
-    top1_token = tokenizer.decode([top_idx[0].item()])  # type: ignore[arg-type]
+    top1_token = tokenizer.decode([top_idx[0].item()])  # type: ignore[attr-defined]
 
     # H_alts: entropy of the distribution excluding top-1
     top1_p = probs[top_idx[0]].item()
@@ -81,7 +138,7 @@ def extract_signals(
     delta_h = round(entropy - prev_entropy, 4) if prev_entropy is not None else None
 
     # Thinking-token detection
-    token_text = tokenizer.decode([chosen_token_id]).strip().lower()  # type: ignore[arg-type]
+    token_text = tokenizer.decode([chosen_token_id]).strip().lower()  # type: ignore[attr-defined]
     is_thinking = token_text in THINKING_TOKENS
 
     return TokenSignals(

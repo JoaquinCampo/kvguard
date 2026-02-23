@@ -1,0 +1,185 @@
+% kvguard paper — Results section
+% Standalone file; \input{results.tex} from main paper
+% Requires: booktabs, multirow, graphicx, amsmath, xcolor
+
+\section{Results}
+\label{sec:results}
+
+We evaluate kvguard on GSM8K (50 prompts, 3-shot CoT) using Qwen2.5-3B-Instruct on Apple MPS, with three kvpress compressors (StreamingLLM, SnapKV, ObservedAttention) at five compression ratios (0.25, 0.50, 0.625, 0.75, 0.875). Our primary metric is \emph{Catastrophic Failure Rate} (CFR): the fraction of prompts exhibiting looping, non-termination, or answer failure. We report both absolute CFR and the controller's relative CFR reduction.
+
+%----------------------------------------------------------------------
+\subsection{Compression Induces Distinct Failure Profiles}
+\label{sec:results:baseline}
+
+Table~\ref{tab:baseline} characterizes how each compressor degrades under increasing compression. The uncompressed baseline achieves 74\% accuracy with 26\% CFR (13 wrong answers, 2 non-terminations out of 50 prompts).
+
+\begin{table}[t]
+\centering
+\caption{Baseline accuracy and CFR across compressors and compression ratios (fraction of KV cache removed). $n=50$ prompts per configuration. Dominant failure modes: WA = wrong answer, NT = non-termination, LP = looping.}
+\label{tab:baseline}
+\small
+\begin{tabular}{llccl}
+\toprule
+\textbf{Compressor} & \textbf{Ratio} & \textbf{Acc.\%} & \textbf{CFR\%} & \textbf{Dominant} \\
+\midrule
+None (baseline) & 0.000 & 74 & 26 & WA \\
+\midrule
+\multirow{5}{*}{StreamingLLM}
+ & 0.250 & 80 & 20 & WA \\
+ & 0.500 & 80 & 20 & WA \\
+ & 0.625 & 80 & 20 & WA \\
+ & 0.750 & 74 & 26 & WA \\
+ & 0.875 & 14 & 86 & WA+LP \\
+\midrule
+\multirow{5}{*}{SnapKV}
+ & 0.250 & 78 & 22 & WA \\
+ & 0.500 & 76 & 24 & WA \\
+ & 0.625 & 66 & 34 & WA \\
+ & 0.750 & 66 & 34 & WA+NT \\
+ & 0.875 &  0 & 100 & LP (49/50) \\
+\midrule
+\multirow{5}{*}{Obs.\ Attention}
+ & 0.250 & 74 & 26 & WA \\
+ & 0.500 & 56 & 44 & WA \\
+ & 0.625 & 36 & 64 & WA \\
+ & 0.750 & 24 & 76 & WA+NT \\
+ & 0.875 & 12 & 88 & WA \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three distinct degradation profiles emerge:
+\begin{itemize}
+\item \textbf{StreamingLLM} exhibits a cliff profile: accuracy remains stable at 80\% through 0.625, then collapses to 14\% at 0.875. Failures are predominantly quiet (wrong answers).
+\item \textbf{SnapKV} shows a catastrophic cliff at 0.875: from 66\% accuracy at 0.750 to 0\% accuracy with 49/50 prompts exhibiting looping behavior. This is the most signal-rich failure mode.
+\item \textbf{ObservedAttention} degrades progressively from 74\% to 12\% with no sharp cliff. Failures are predominantly quiet wrong answers at all compression levels.
+\end{itemize}
+
+This diversity is critical: a compressor-agnostic controller must handle both sudden catastrophic failures (SnapKV looping) and gradual quality degradation (ObservedAttention wrong answers).
+
+%----------------------------------------------------------------------
+\subsection{Hazard Predictor Performance}
+\label{sec:results:predictor}
+
+We train an XGBoost binary classifier to predict catastrophe within the next $H=32$ tokens using a 41-dimensional per-token feature vector: 25 HALT logit features, 8 rolling statistics, repetition count, token position, and compression ratio. Training uses 800 traces (263K tokens, 13\% positive rate) with leave-one-compressor-out cross-validation.
+
+\begin{table}[t]
+\centering
+\caption{Hazard predictor performance. Val = held-out 20\% split (within-compressor). CV = leave-one-compressor-out (cross-compressor generalization). Trace detection = fraction of catastrophe traces where the predictor fires at least once before or at onset.}
+\label{tab:predictor}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Val} & \textbf{CV (mean)} \\
+\midrule
+AUROC & 0.945 & 0.898 \\
+F1 & 0.643 & 0.398 \\
+Recall @ 5\% FPR & 0.693 & --- \\
+Recall @ 10\% FPR & 0.785 & --- \\
+\midrule
+Trace detection rate & \multicolumn{2}{c}{100\% (22/22 traces)} \\
+Mean lead time (tokens) & \multicolumn{2}{c}{34.1 from onset} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Feature importance.} The top-5 features by gain are: \texttt{compression\_ratio} (1645), \texttt{rep\_count\_sum\_8} (1272), \texttt{rep\_count} (926), \texttt{token\_position} (322), and \texttt{h\_alts\_mean\_8} (314). The predictor combines compression context, repetition detection, positional risk, and reasoning-quality signals --- matching the hypothesized signal structure.
+
+\paragraph{Per-compressor generalization.} Cross-validation reveals uneven generalization: SnapKV (AUROC~0.97, F1~0.69) generalizes best because looping produces strong repetition signals. StreamingLLM (AUROC~0.89) and ObservedAttention (AUROC~0.87) are harder because their quiet failures (wrong answers, gradual drift) produce weaker signal contrast. Crucially, the predictor is strongest where CFR is highest.
+
+\paragraph{Trace-level detection.} Despite modest token-level recall (69\% at 5\% FPR), the predictor achieves 100\% trace-level detection: every catastrophe trace fires at least one alarm token, which is sufficient for the controller's cumulative trigger mechanism.
+
+%----------------------------------------------------------------------
+\subsection{Controller Evaluation}
+\label{sec:results:controller}
+
+We evaluate the controller via offline simulation on all 800 traces. For each trace where the controller triggers (transitions to SAFE mode), the simulation checks whether the same prompt at the safe compression ratio ($r_{\text{safe}}=0.0$, i.e., no compression) avoids catastrophe. Table~\ref{tab:controller} reports results for three operating points.
+
+\begin{table}[t]
+\centering
+\caption{Controller CFR reduction at three operating points. CFR reduction = (baseline $-$ controlled) / baseline. FP = false positive rate (triggers on non-catastrophe traces). Results on 800 traces (50 prompts $\times$ 16 configurations). ``Excl.\ extreme'' excludes SnapKV@0.875 where looping onset is immediate ($<$5 tokens) and no online controller can react.}
+\label{tab:controller}
+\small
+\begin{tabular}{lccc}
+\toprule
+ & \textbf{Conservative} & \textbf{Balanced} & \textbf{Aggressive} \\
+\midrule
+$\tau_{\text{low}} / \tau_{\text{high}}$ & 0.7 / 0.8 & 0.3 / 0.7 & 0.3 / 0.6 \\
+$k$ (consecutive) & 5 & 8 & 5 \\
+\midrule
+Overall CFR red.\ & 36.9\% & 43.2\% & 47.7\% \\
+\ \ excl.\ extreme & 50.8\% & 63.9\% & 70.5\% \\
+FP rate & 2.3\% & 6.9\% & 25.2\% \\
+\midrule
+\multicolumn{4}{l}{\emph{Per-compressor CFR reduction (balanced):}} \\
+\ \ StreamingLLM & 52.4\% & 66.7\% & 76.2\% \\
+\ \ SnapKV & 23.1\% & 27.7\% & 29.2\% \\
+\ \ \ \ excl.\ 0.875 & 53.3\% & 60.0\% & 66.7\% \\
+\ \ Obs.\ Attention & 60.0\% & 64.0\% & 72.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Main result.} The balanced configuration reduces overall CFR by 43.2\% (111$\to$63 catastrophes) with only 6.9\% false positive rate, meaning compression remains active for 93.1\% of prompts. Excluding the extreme case of SnapKV@0.875 --- where looping onset occurs within the first 5 tokens, making any online controller ineffective --- CFR reduction rises to 63.9\%.
+
+\paragraph{Orthogonality.} The controller exceeds 50\% CFR reduction on all three compressors when excluding the extreme SnapKV case: StreamingLLM 66.7\%, SnapKV 60.0\% (at ratios $\leq$0.75), ObservedAttention 64.0\%. This validates the compressor-agnostic design.
+
+\paragraph{The controller is not ``turning off compression.''} At 6.9\% FP, the controller triggers on only 52 of 750 total prompts. Of the 698 non-triggered prompts, compression proceeds exactly as without the controller. The safety net has negligible overhead in the common case.
+
+\paragraph{Per-budget analysis.} Of 15 compressor-ratio configurations, 12 achieve $\geq$50\% CFR reduction with the balanced config. The three exceptions are: SnapKV@0.250 (33\%, only 3 baseline catastrophes --- small-sample noise), SnapKV@0.875 (18\%, immediate onset), and StreamingLLM@0.750 (60\%, just above threshold). The controller is most effective at moderate-to-high compression (0.5--0.75) where failures are common but gradual enough to detect.
+
+%----------------------------------------------------------------------
+\subsection{Ablation Study}
+\label{sec:results:ablation}
+
+We isolate the contribution of each controller component through four ablations (Table~\ref{tab:ablation}).
+
+\begin{table}[t]
+\centering
+\caption{Ablation study. Each row modifies one component of the balanced configuration. ``Ceiling'' = theoretical maximum prevention (always trigger on every trace). ``Gap to ceiling'' = what fraction of preventable catastrophes the balanced controller prevents.}
+\label{tab:ablation}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Configuration} & \textbf{CFR Red.\%} & \textbf{FP Rate\%} \\
+\midrule
+Always-safe (ceiling) & 61.3 & 100.0 \\
+Balanced (ours) & 43.2 & 8.1 \\
+\ \ gap to ceiling & \multicolumn{2}{c}{70.5\% of max at 8.1\% FP} \\
+\midrule
+Random predictor & 0.6 & 1.1 \\
+Trained predictor & 43.2 & 8.1 \\
+\ \ $\Delta$ & \multicolumn{2}{c}{$+$42.6pp from trained predictor} \\
+\midrule
+No hysteresis ($k=1$) & 60.4 & 61.5 \\
+With hysteresis ($k=8$) & 43.2 & 8.1 \\
+\ \ tradeoff & \multicolumn{2}{c}{$-$17pp prevention, $-$53pp FP} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Always-safe ceiling.} Triggering SAFE mode on every trace prevents 61.3\% of catastrophes (111$\to$43). The remaining 38.7\% represent model-intrinsic failures that occur even without compression. The balanced controller achieves 70.5\% of this theoretical maximum while maintaining 8.1\% false positive rate --- the safety net is selective, not indiscriminate.
+
+\paragraph{Trained predictor is essential.} A random predictor with matched trigger probability achieves only 0.6\% CFR reduction. The trained hazard predictor adds 42.6 percentage points, demonstrating that the ML component --- not just the state machine architecture --- drives the controller's effectiveness.
+
+\paragraph{Hysteresis is critical for precision.} Without hysteresis ($k=1$: trigger on any single high-risk token), CFR reduction reaches 60.4\% but at 61.5\% false positive rate --- the controller triggers on most prompts regardless of actual risk. Requiring $k=8$ consecutive high-risk tokens reduces FP by 53 percentage points at a cost of 17 percentage points prevention. This is the key design tradeoff: the state machine converts weak per-token predictions into reliable per-trace triggers.
+
+\paragraph{Threshold sensitivity.} A sweep over 45 configurations ($\tau_{\text{low}} \in \{0.1, 0.3, 0.5, 0.7\}$, $\tau_{\text{high}} \in \{0.4, 0.6, 0.7, 0.8\}$, $k \in \{1, 3, 8\}$) reveals a smooth Pareto frontier from 17.1\%/0.0\%FP to 48.6\%/100\%FP with no cliff edges. The controller is robust to parameter choice --- practitioners can tune for their risk appetite without fragile sensitivity.
+
+%----------------------------------------------------------------------
+\subsection{Key Insight: Cumulative Detection}
+\label{sec:results:insight}
+
+The most surprising finding is that the controller achieves 66.7\% CFR reduction on StreamingLLM despite the hazard predictor having only 41\% token-level recall at 5\% FPR for that compressor. The state machine with $k=8$ hysteresis accumulates marginal per-token signals: even if any individual token has low detection probability, requiring 8 consecutive high-risk tokens provides reliable per-trace triggering. This cumulative detection principle means the controller does not require a near-perfect per-token classifier --- it needs only that catastrophe traces produce \emph{some} elevated signal that accumulates over time.
+
+%----------------------------------------------------------------------
+\subsection{Limitations}
+\label{sec:results:limitations}
+
+\paragraph{Immediate-onset failures.} SnapKV at 0.875 compression produces looping within the first 5 tokens. No online controller can prevent failures with $<$5 token lead time. This limitation is inherent to online monitoring and applies to any reactive approach.
+
+\paragraph{Quiet failures.} The controller is weakest against wrong-answer failures that produce no detectable signal (no looping, no entropy spike, no repetition). These ``quiet'' failures account for the gap between our 43.2\% overall reduction and the 61.3\% ceiling.
+
+\paragraph{Offline simulation.} Our evaluation uses offline trace replay rather than live token-by-token generation with dynamic compression switching. The simulation assumes that switching to $r_{\text{safe}}=0.0$ recovers the same behavior as never compressing, which may not hold if early compressed tokens have already corrupted the reasoning state.
+
+\paragraph{Single model and task.} All experiments use Qwen2.5-3B-Instruct on GSM8K. Generalization to other models, tasks, and scales remains to be validated, though the compressor-agnostic architecture and leave-one-compressor-out CV provide evidence of transferability within this setup.

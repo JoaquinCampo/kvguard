@@ -1,0 +1,53 @@
+% kvguard — Main paper file
+% Compile: pdflatex main && bibtex main && pdflatex main && pdflatex main
+
+\documentclass[11pt,a4paper]{article}
+\usepackage[hyperref]{acl}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{multirow}
+\usepackage{xspace}
+
+% Ensure UTF-8 encoding
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% Microtype for better typography
+\usepackage{microtype}
+
+% Consistent formatting for kvguard
+\newcommand{\kvguard}{\textsc{kvguard}\xspace}
+
+\title{\kvguard: Catastrophe-Aware KV-Cache Compression via\\Closed-Loop Hazard Control}
+
+\author{
+  Anonymous Author(s)
+}
+
+\begin{document}
+
+\maketitle
+
+% === Abstract + Introduction ===
+\input{introduction}
+
+% === Related Work ===
+\input{related_work}
+
+% === Method ===
+\input{method}
+
+% === Results ===
+\input{results}
+
+% === Discussion + Conclusion ===
+\input{discussion}
+
+% === Bibliography ===
+\bibliography{references}
+
+\end{document}

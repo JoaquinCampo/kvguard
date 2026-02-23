@@ -1,0 +1,63 @@
+% kvguard paper — Abstract and Introduction
+% Standalone file; \input{introduction.tex} from main paper
+% Requires: No special packages
+
+\begin{abstract}
+KV-cache compression enables long-context inference under memory constraints, but existing compressors operate without feedback: they evict tokens irreversibly and never verify whether eviction degraded generation quality.
+We show that compression induces \emph{catastrophic failures}---looping, non-termination, and reasoning corruption---that standard average-accuracy metrics hide.
+We present \textsc{kvguard}, a closed-loop controller inspired by TCP congestion control that wraps any existing KV-cache compressor.
+\textsc{kvguard} extracts a 42-dimensional per-token feature vector from the model's own logit distribution at near-zero cost, trains a hazard predictor to forecast catastrophe within the next 32 tokens (AUROC 0.945), and uses a hysteresis-based state machine to dynamically relax compression when danger is detected.
+Evaluated on Qwen2.5-3B-Instruct with GSM8K across three compressors (StreamingLLM, SnapKV, ObservedAttention) at five compression ratios, \textsc{kvguard} reduces the Catastrophic Failure Rate by 43.2\% overall (63.9\% excluding immediate-onset cases) with only 6.9\% false positive rate.
+The controller exceeds 50\% CFR reduction on all three compressors, validating its compressor-agnostic design.
+Ablations confirm that each component---trained predictor (+42.6pp over random), hysteresis ($-$53pp false positives), and graduated response---contributes independently.
+\end{abstract}
+
+
+\section{Introduction}
+\label{sec:introduction}
+
+Autoregressive language models cache key-value (KV) pairs from every attention layer at every decoding step, producing memory requirements that grow linearly with sequence length.
+For long-context inference---multi-step reasoning, document summarization, agentic workflows---this cache can dominate GPU memory, prompting a line of work on KV-cache compression: methods that evict, quantize, or merge cache entries to reduce the memory footprint~\cite{streamingllm2024,snapkv2024,h2o2023,pyramidkv2024}.
+These methods report average accuracy or perplexity under compression and show that significant memory savings are possible with modest average-case degradation.
+
+However, average metrics conceal a dangerous failure pattern.
+At moderate-to-aggressive compression ratios, a fraction of prompts exhibit \emph{catastrophic failures}: the model enters infinite loops, fails to terminate, or silently corrupts its chain-of-thought reasoning.
+A compressor reporting 95\% average accuracy may achieve 0\% accuracy on the 5\% of cases where compression causes catastrophe---a tail that standard evaluation completely hides.
+We characterize three distinct failure profiles across three compressors: StreamingLLM exhibits a cliff (stable accuracy that collapses at a threshold), SnapKV shows catastrophic cliffs (sudden universal looping), and ObservedAttention degrades progressively.
+These diverse profiles make the problem particularly challenging: a safety mechanism must handle both sudden and gradual failure modes.
+
+All existing KV-cache compression methods are \emph{open-loop}: they decide which tokens to evict based on importance scores or attention patterns, execute the eviction irreversibly, and never check whether the decision was correct.
+Recent work has begun to recognize this gap.
+ASR-KF-EGR~\cite{asr_kf_egr2024} proposes but does not implement an entropy-guided recovery system.
+RefreshKV~\cite{refreshkv2024} maintains the full cache for periodic recalibration, sacrificing memory savings entirely.
+ERGO~\cite{ergo2025} demonstrates that entropy signals can trigger corrective action but employs only a full context reset---a sledgehammer response to what may be a localized problem.
+ThinKV~\cite{thinkv2025} classifies reasoning phases to vary compression aggressiveness, but provides no mechanism to detect or recover from misclassification.
+None of these systems close the loop: none monitor compressed generation quality and feed that information back into cache management.
+
+The detection signals, however, already exist.
+The HALT framework~\cite{halt2024} shows that a model's top-$k$ logit features cheaply predict generation quality.
+Work on reasoning dynamics~\cite{reasoning_dynamics2025} identifies a small set of ``thinking tokens'' whose suppression disproportionately degrades chain-of-thought.
+Entropy monitoring, used by ERGO for post-hoc detection, can serve as a proactive leading indicator.
+Repetition patterns directly signal looping.
+What is missing is not signal---it is \emph{control}: connecting these signals to a feedback mechanism that adjusts compression before failures become irreversible.
+
+We present \textsc{kvguard}, a catastrophe-aware controller inspired by TCP congestion control~\cite{tcp_reno}.
+Like TCP, the controller starts aggressively (high compression), monitors for trouble (hazard prediction), and backs off when problems are detected (graduated response from alert through safe mode to recovery).
+Unlike existing systems, \textsc{kvguard} is a \emph{wrapper}: it wraps any existing KV-cache compressor without modification, making it orthogonal to compression research---every advance in compression methods automatically benefits from the safety layer.
+
+Our contributions are:
+\begin{enumerate}
+    \item \textbf{Characterization of compression-induced catastrophic failures.}
+    We collect 800 generation traces across three compressors and five compression ratios, identifying three distinct failure profiles and showing that 44\% of traces at moderate-to-aggressive compression exhibit catastrophe.
+
+    \item \textbf{A zero-cost hazard predictor.}
+    We extract a 42-dimensional per-token feature vector from quantities already computed during decoding (logit distribution, entropy, repetition counts) and train an XGBoost classifier that achieves AUROC 0.945 with 100\% trace-level detection and 34-token mean lead time before catastrophe onset.
+    Leave-one-compressor-out cross-validation (mean AUROC 0.898) validates cross-compressor generalization.
+
+    \item \textbf{A closed-loop controller with hysteresis-based state machine.}
+    The controller reduces CFR by 43.2\% overall (63.9\% excluding immediate-onset cases) with only 6.9\% false positive rate, exceeding 50\% CFR reduction on all three compressors.
+    The key mechanism is cumulative detection: requiring $k$ consecutive high-risk tokens converts modest per-token recall into reliable per-trace triggering.
+
+    \item \textbf{Systematic ablation validating each component.}
+    We show that the trained predictor adds 42.6 percentage points over a random baseline, hysteresis reduces false positives by 53pp at a 17pp prevention cost, and the balanced configuration achieves 70.5\% of the theoretical maximum prevention ceiling while triggering on only 8.1\% of prompts.
+\end{enumerate}
