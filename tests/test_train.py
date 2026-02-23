@@ -258,15 +258,11 @@ class TestSplitByPrompt:
         for prompt_id in {t.prompt_id for t in self.ds.traces}:
             trace_idxs = [t.trace_idx for t in self.ds.traces if t.prompt_id == prompt_id]
             in_val = [i in val_set for i in trace_idxs]
-            assert all(in_val) or not any(in_val), (
-                f"Prompt {prompt_id} split across partitions"
-            )
+            assert all(in_val) or not any(in_val), f"Prompt {prompt_id} split across partitions"
 
     def test_all_traces_assigned(self) -> None:
         split = split_by_prompt(self.ds, val_fraction=0.2)
-        assert sorted(split.train_traces + split.val_traces) == list(
-            range(len(self.ds.traces))
-        )
+        assert sorted(split.train_traces + split.val_traces) == list(range(len(self.ds.traces)))
 
     def test_stratification(self) -> None:
         """Both partitions have at least one catastrophe prompt."""
@@ -454,3 +450,11 @@ class TestRunTraining:
         metrics = json.loads((out_dir / "metrics.json").read_text())
         assert "train" in metrics
         assert "val" in metrics
+
+        # Verify split_info.json is saved
+        assert (out_dir / "split_info.json").exists()
+        split_info = json.loads((out_dir / "split_info.json").read_text())
+        assert "val_prompt_ids" in split_info
+        assert "train_prompt_ids" in split_info
+        assert len(split_info["val_prompt_ids"]) > 0
+        assert len(split_info["train_prompt_ids"]) > 0

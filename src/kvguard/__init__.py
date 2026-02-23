@@ -142,7 +142,9 @@ def eval_controller(
     num_prompts: int = typer.Option(50, help="Filter to results with this prompt count"),
     tau_low: float = typer.Option(0.3, help="NORMAL → ALERT threshold"),
     tau_high: float = typer.Option(0.7, help="ALERT → SAFE threshold"),
-    safe_ratio: float = typer.Option(0.0, help="Compression ratio in SAFE mode (0.0 = no compression)"),
+    safe_ratio: float = typer.Option(
+        0.0, help="Compression ratio in SAFE mode (0.0 = no compression)"
+    ),
     k_escalate: int = typer.Option(8, help="Consecutive high-risk tokens to escalate"),
     j_deescalate: int = typer.Option(5, help="Consecutive low-risk tokens to de-escalate"),
     output_path: Path = typer.Option(Path("results/controller_eval.json"), help="Output JSON path"),
@@ -155,8 +157,10 @@ def eval_controller(
     from kvguard.controller import ControllerConfig
     from kvguard.evaluate_controller import (
         eval_result_to_dict,
-        evaluate_controller as _eval_ctrl,
         format_eval_table,
+    )
+    from kvguard.evaluate_controller import (
+        evaluate_controller as _eval_ctrl,
     )
 
     logger.info(f"Loading predictor from {model_path}")
@@ -172,8 +176,22 @@ def eval_controller(
         j_deescalate=j_deescalate,
     )
 
+    # Load holdout split info if available
+    holdout_prompt_ids: set[str] | None = None
+    split_info_path = model_path.parent / "split_info.json"
+    if split_info_path.exists():
+        split_info = json.loads(split_info_path.read_text())
+        holdout_prompt_ids = set(split_info["val_prompt_ids"])
+        logger.info(f"Evaluating on {len(holdout_prompt_ids)} held-out prompts")
+
     logger.info(f"Running controller evaluation on {results_dir}")
-    result = _eval_ctrl(results_dir, predictor, num_prompts=num_prompts, controller_config=config)
+    result = _eval_ctrl(
+        results_dir,
+        predictor,
+        num_prompts=num_prompts,
+        controller_config=config,
+        holdout_prompt_ids=holdout_prompt_ids,
+    )
 
     print(format_eval_table(result))
 

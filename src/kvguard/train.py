@@ -162,8 +162,7 @@ def split_by_prompt(
         return [prompts[i] for i in perm[:n_val]]
 
     val_prompts = set(
-        _sample_val(pos_prompts, val_fraction)
-        + _sample_val(neg_prompts, val_fraction)
+        _sample_val(pos_prompts, val_fraction) + _sample_val(neg_prompts, val_fraction)
     )
 
     if not val_prompts:
@@ -171,14 +170,9 @@ def split_by_prompt(
         perm = rng.permutation(len(prompt_ids))
         val_prompts = {prompt_ids[i] for i in perm[:n_val]}
 
-    val_traces = sorted(
-        ti for pid in val_prompts for ti in prompt_to_traces[pid]
-    )
+    val_traces = sorted(ti for pid in val_prompts for ti in prompt_to_traces[pid])
     train_traces = sorted(
-        ti
-        for pid in prompt_ids
-        if pid not in val_prompts
-        for ti in prompt_to_traces[pid]
+        ti for pid in prompt_ids if pid not in val_prompts for ti in prompt_to_traces[pid]
     )
 
     train_mask = np.isin(ds.trace_ids, train_traces)
@@ -497,6 +491,16 @@ def run_training(
             "positive_rate": float(np.mean(ds.y)),
         }
         (output_dir / "metrics.json").write_text(json.dumps(metrics_out, indent=2))
+
+        # Save prompt partition for controller evaluation holdout
+        val_prompt_ids = {ds.traces[t].prompt_id for t in split.val_traces}
+        split_info = {
+            "val_prompt_ids": sorted(val_prompt_ids),
+            "train_prompt_ids": sorted({ds.traces[t].prompt_id for t in split.train_traces}),
+            "n_val_traces": len(split.val_traces),
+            "n_train_traces": len(split.train_traces),
+        }
+        (output_dir / "split_info.json").write_text(json.dumps(split_info, indent=2))
 
     return TrainOutput(
         model=model,

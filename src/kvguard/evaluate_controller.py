@@ -99,6 +99,21 @@ def load_all_traces(
     return traces
 
 
+def filter_traces_by_prompts(
+    all_traces: dict[tuple[str, float], dict[str, Any]],
+    prompt_ids: set[str],
+) -> dict[tuple[str, float], dict[str, Any]]:
+    """Filter traces to only include specified prompt_ids.
+
+    Used to evaluate the controller only on held-out prompts that were
+    not used for predictor training.
+    """
+    return {
+        key: {pid: trace for pid, trace in traces.items() if pid in prompt_ids}
+        for key, traces in all_traces.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Per-trace controller simulation
 # ---------------------------------------------------------------------------
@@ -311,6 +326,7 @@ def evaluate_controller(
     num_prompts: int = 50,
     controller_config: ControllerConfig | None = None,
     rolling_window: int = ROLLING_WINDOW,
+    holdout_prompt_ids: set[str] | None = None,
 ) -> EvalResult:
     """Run full offline controller evaluation.
 
@@ -335,6 +351,9 @@ def evaluate_controller(
 
     # Load all traces
     all_traces = load_all_traces(results_dir, num_prompts=num_prompts)
+
+    if holdout_prompt_ids is not None:
+        all_traces = filter_traces_by_prompts(all_traces, holdout_prompt_ids)
 
     eval_result = EvalResult(safe_compression_ratio=safe_ratio)
 
@@ -415,7 +434,9 @@ def evaluate_controller(
                 controlled_cfr=round(controlled_cfr, 4),
                 cfr_reduction_abs=round(reduction_abs, 4),
                 cfr_reduction_pct=round(reduction_pct, 1),
-                mean_trigger_token=round(np.mean(trigger_tokens), 1) if trigger_tokens else None,
+                mean_trigger_token=round(float(np.mean(trigger_tokens)), 1)
+                if trigger_tokens
+                else None,
                 false_trigger_count=false_triggers,
             )
         )
