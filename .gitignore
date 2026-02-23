@@ -23,3 +23,7 @@ results/
 
 # Logs (generated during sweeps)
 logs/
+
+# Keep writing artifacts local-only
+docs/
+paper/
