@@ -28,7 +28,7 @@ BASE_FEATURE_NAMES: list[str] = [
     "h_alts",
     "avg_logp",
     "delta_h",
-    "delta_h_valid",
+    "delta_h_valid",  # NOTE: near-constant (0 only at t=0, 1 elsewhere). Low signal.
     "rep_count",
     "is_thinking_token",
 ]
