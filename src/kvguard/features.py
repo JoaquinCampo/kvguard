@@ -199,6 +199,24 @@ class Dataset:
     feature_names: list[str]  # ordered feature column names
     traces: list[TraceMeta] = field(default_factory=list)
 
+    def drop_features(self, names: list[str]) -> "Dataset":
+        """Return a new Dataset with specified feature columns removed."""
+        indices_to_drop = []
+        for name in names:
+            if name not in self.feature_names:
+                msg = f"Feature '{name}' not in dataset: {self.feature_names}"
+                raise KeyError(msg)
+            indices_to_drop.append(self.feature_names.index(name))
+
+        keep = [i for i in range(self.X.shape[1]) if i not in indices_to_drop]
+        return Dataset(
+            X=self.X[:, keep],
+            y=self.y.copy(),
+            trace_ids=self.trace_ids.copy(),
+            feature_names=[self.feature_names[i] for i in keep],
+            traces=list(self.traces),
+        )
+
 
 def load_result_file(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Load a sweep result JSON, returning (config, results_list)."""
