@@ -215,10 +215,11 @@ class TestRollingFeatures:
     def test_token_position_range(self) -> None:
         n = 10
         X_base = flatten_signals([_make_signal_dict() for _ in range(n)])
-        X_full = add_rolling_features(X_base, window=8)
+        X_full = add_rolling_features(X_base, window=8, max_new_tokens=512)
         pos = X_full[:, -2]  # token_position is second-to-last
         assert pos[0] == pytest.approx(0.0)
-        assert pos[-1] == pytest.approx(1.0)
+        # With max_new_tokens=512, last token is 9/512, not 1.0
+        assert pos[-1] == pytest.approx(9 / 512, abs=1e-5)
         # compression_ratio is constant across trace
         assert X_full[0, -1] == pytest.approx(0.0)
         assert X_full[-1, -1] == pytest.approx(0.0)

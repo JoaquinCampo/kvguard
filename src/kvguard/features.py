@@ -133,6 +133,7 @@ def add_rolling_features(
     X_base: np.ndarray,
     window: int = ROLLING_WINDOW,
     compression_ratio: float = 0.0,
+    max_new_tokens: int = 512,
 ) -> np.ndarray:
     """Append rolling statistics, token_position, and compression_ratio.
 
@@ -140,6 +141,7 @@ def add_rolling_features(
         X_base: (N, N_BASE) base features for a single trace.
         window: Rolling window size.
         compression_ratio: Fraction of KV-cache removed (0.0 = none).
+        max_new_tokens: Maximum generation length (denominator for token_position).
 
     Returns:
         (N, N_BASE + n_rolling + 2) augmented feature matrix.
@@ -157,11 +159,10 @@ def add_rolling_features(
     rep_idx = BASE_FEATURE_NAMES.index("rep_count")
     extras.append(_rolling_stat(X_base[:, rep_idx], window, "sum"))
 
-    # Normalised token position [0, 1]
-    if n > 1:
-        extras.append(np.arange(n, dtype=np.float32) / (n - 1))
-    else:
-        extras.append(np.array([0.0], dtype=np.float32))
+    # Normalised token position [0, 1] using max_new_tokens as denominator
+    # This avoids leaking actual sequence length (unknown at inference time)
+    denom = max(max_new_tokens, 1)
+    extras.append(np.arange(n, dtype=np.float32) / denom)
 
     # Compression ratio (constant per trace, known at inference time)
     extras.append(np.full(n, compression_ratio, dtype=np.float32))
@@ -259,6 +260,7 @@ def build_dataset(
                 X_base,
                 window=rolling_window,
                 compression_ratio=run.compression_ratio,
+                max_new_tokens=run.max_new_tokens,
             )
 
             # Labels
