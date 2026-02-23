@@ -186,6 +186,7 @@ class TraceMeta:
     has_catastrophe: bool
     catastrophe_types: list[str]
     n_tokens: int
+    model: str = ""
 
 
 @dataclass
@@ -281,6 +282,7 @@ def build_dataset(
                     has_catastrophe=bool(cat_types),
                     catastrophe_types=cat_types,
                     n_tokens=n_tok,
+                    model=run.model,
                 )
             )
             trace_idx += 1
