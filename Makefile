@@ -1,12 +1,12 @@
-.PHONY: check fmt lint typecheck test setup-server download-models phase2 status
+.PHONY: check fmt lint typecheck test setup-server download-models phase2 status paper figures ablations
 
 check: fmt lint typecheck test
 
 fmt:
-	uv run ruff format src/ tests/
+	uv run ruff format src/ tests/ scripts/
 
 lint:
-	uv run ruff check src/ tests/
+	uv run ruff check src/ tests/ scripts/
 
 typecheck:
 	uv run mypy src/
@@ -26,3 +26,13 @@ phase2:
 
 status:
 	bash scripts/check_status.sh
+
+# Paper targets
+paper:
+	cd paper && pdflatex -interaction=nonstopmode main.tex && bibtex main && pdflatex -interaction=nonstopmode main.tex && pdflatex -interaction=nonstopmode main.tex
+
+figures:
+	uv run python scripts/generate_figures.py
+
+ablations:
+	uv run python scripts/run_ablations.py
