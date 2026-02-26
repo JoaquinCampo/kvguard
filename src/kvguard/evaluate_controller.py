@@ -60,6 +60,9 @@ class TraceInfo:
         (clamped to sequence length) instead of the raw catastrophe_onsets value,
         matching the proxy logic in :func:`kvguard.labeling.compute_hazard_labels`.
         """
+        if self.num_tokens == 0:
+            return None
+
         onsets: list[int] = []
 
         if "looping" in self.catastrophe_onsets:
@@ -158,8 +161,6 @@ class ControllerTrace:
     cfr_onset: int | None
     controller_triggered_safe: bool
     safe_trigger_token: int | None
-    controller_triggered_recovery: bool
-    recovery_trigger_token: int | None
     lead_time: int | None  # tokens before onset that controller triggered
     mode_history: list[int]  # Mode values per token
     hazard_probs: list[float]  # predictor probabilities per token
@@ -168,7 +169,7 @@ class ControllerTrace:
 def _run_predictor_state_machine(
     hazard_probs: list[float],
     config: ControllerConfig,
-) -> tuple[list[int], int | None, int | None]:
+) -> tuple[list[int], int | None]:
     """Run the controller state machine using hazard probabilities directly.
 
     Instead of feeding synthetic signals through compute_risk_score(),
@@ -180,8 +181,7 @@ def _run_predictor_state_machine(
     - De-escalation: J consecutive tokens with hazard_prob < threshold
 
     Returns:
-        (mode_history, safe_trigger_token, recovery_trigger_token)
-        recovery_trigger_token is always None (RECOVERY mode removed).
+        (mode_history, safe_trigger_token)
     """
     mode = Mode.NORMAL
     consecutive_high = 0
@@ -231,7 +231,7 @@ def _run_predictor_state_machine(
         if mode >= Mode.SAFE and safe_trigger is None:
             safe_trigger = t
 
-    return mode_history, safe_trigger, None
+    return mode_history, safe_trigger
 
 
 def simulate_controller_on_trace(
@@ -265,8 +265,6 @@ def simulate_controller_on_trace(
             cfr_onset=trace.cfr_onset,
             controller_triggered_safe=False,
             safe_trigger_token=None,
-            controller_triggered_recovery=False,
-            recovery_trigger_token=None,
             lead_time=None,
             mode_history=[],
             hazard_probs=[],
@@ -284,9 +282,7 @@ def simulate_controller_on_trace(
     hazard_probs = predictor.predict_proba(X_full)[:, 1].tolist()
 
     # Run state machine with hazard probabilities as risk scores
-    mode_history, safe_trigger, recovery_trigger = _run_predictor_state_machine(
-        hazard_probs, controller_config
-    )
+    mode_history, safe_trigger = _run_predictor_state_machine(hazard_probs, controller_config)
 
     # Compute lead time (tokens before onset that controller triggered)
     onset = trace.cfr_onset
@@ -302,8 +298,6 @@ def simulate_controller_on_trace(
         cfr_onset=onset,
         controller_triggered_safe=safe_trigger is not None,
         safe_trigger_token=safe_trigger,
-        controller_triggered_recovery=False,
-        recovery_trigger_token=None,
         lead_time=lead_time,
         mode_history=mode_history,
         hazard_probs=hazard_probs,
@@ -391,6 +385,11 @@ def evaluate_controller(
 
     if holdout_prompt_ids is not None:
         all_traces = filter_traces_by_prompts(all_traces, holdout_prompt_ids)
+    else:
+        logger.warning(
+            "No holdout_prompt_ids provided — evaluating on ALL prompts. "
+            "Pass holdout_prompt_ids from split_info.json to avoid data leakage."
+        )
 
     eval_result = EvalResult(safe_compression_ratio=safe_ratio)
 
