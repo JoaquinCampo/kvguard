@@ -35,6 +35,7 @@ def load_all_results(
     nt_onset_frac: float = 0.75,
     rolling_window: int = 8,
     model_filter: str | None = None,
+    press_exclude: list[str] | None = None,
 ) -> Dataset:
     """Load all sweep results into a flat ML dataset.
 
@@ -48,6 +49,7 @@ def load_all_results(
         nt_onset_frac=nt_onset_frac,
         rolling_window=rolling_window,
         model_filter=model_filter,
+        press_exclude=press_exclude,
     )
 
 
@@ -248,6 +250,8 @@ def train_predictor(
         n_neg = float(np.sum(y_train == 0))
         if n_pos > 0:
             params["scale_pos_weight"] = n_neg / n_pos
+        else:
+            logger.warning("No positive examples in training data — model may be meaningless")
 
     clf = xgb.XGBClassifier(**params)
     fit_kwargs: dict[str, Any] = {}
@@ -421,7 +425,10 @@ def leave_one_out_cv(
     Returns:
         CVResult with per-fold and aggregate metrics.
     """
-    presses = sorted({t.press for t in ds.traces})
+    # Exclude "none" (uncompressed baseline) — the predictor is never used
+    # on uncompressed traces, so holding out the baseline produces a trivially
+    # easy fold (almost no catastrophes) that inflates the CV mean.
+    presses = sorted({t.press for t in ds.traces} - {"none"})
     result = CVResult()
 
     for held_out in presses:
@@ -444,7 +451,7 @@ def leave_one_out_cv(
         model = train_predictor(X_train, y_train, xgb_params=xgb_params)
         metrics = evaluate_predictor(model, X_val, y_val)
 
-        train_presses = sorted({t.press for t in ds.traces if t.press != held_out})
+        train_presses = sorted({t.press for t in ds.traces if t.press != held_out} - {"none"})
         result.folds.append(
             CVFold(
                 held_out_press=held_out,
@@ -484,11 +491,13 @@ def run_training(
     run_cv: bool = True,
     output_dir: Path | None = None,
     model_filter: str | None = None,
+    press_exclude: list[str] | None = None,
+    exclude_features: list[str] | None = None,
 ) -> TrainOutput:
     """End-to-end training pipeline.
 
     1. Load dataset from sweep results.
-    2. Split by trace (stratified).
+    2. Split by prompt (stratified).
     3. Train XGBoost predictor.
     4. Evaluate on train and val sets.
     5. Optionally run leave-one-compressor-out CV.
@@ -505,6 +514,8 @@ def run_training(
         run_cv: Whether to run leave-one-compressor-out CV.
         output_dir: If set, save model + metrics here.
         model_filter: If set, only include traces where ``run.model`` matches.
+        exclude_features: Feature names to drop before training (e.g.
+            ``["compression_ratio", "rep_count"]``).
 
     Returns:
         TrainOutput with model, metrics, and split info.
@@ -515,7 +526,12 @@ def run_training(
         horizon=horizon,
         nt_onset_frac=nt_onset_frac,
         model_filter=model_filter,
+        press_exclude=press_exclude,
     )
+
+    if exclude_features:
+        logger.info(f"Dropping features: {exclude_features}")
+        ds = ds.drop_features(exclude_features)
 
     split = split_by_prompt(ds, val_fraction=val_fraction, random_state=random_state)
 
@@ -562,9 +578,12 @@ def run_training(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         model.save_model(str(output_dir / "hazard_predictor.json"))
-        metrics_out = {
+        metrics_out: dict[str, Any] = {
             "horizon": horizon,
             "nt_onset_frac": nt_onset_frac,
+            "exclude_features": exclude_features,
+            "n_features": int(ds.X.shape[1]),
+            "feature_names": ds.feature_names,
             "train": train_metrics.to_dict(),
             "val": val_metrics.to_dict(),
             "cv": cv_result.to_dict() if cv_result else None,
