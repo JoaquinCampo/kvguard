@@ -74,7 +74,7 @@ echo "=== Log: $LOG_FILE ==="
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "=== Step 1/6: Sweep Qwen/Qwen2.5-7B-Instruct ==="
+echo "=== Step 1/8: Sweep Qwen/Qwen2.5-7B-Instruct ==="
 update_status "sweep" "Qwen/Qwen2.5-7B-Instruct" "running"
 
 uv run kvguard sweep \
@@ -91,7 +91,7 @@ update_status "sweep" "Qwen/Qwen2.5-7B-Instruct" "completed"
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "=== Step 2/6: Sweep meta-llama/Llama-3.1-8B-Instruct ==="
+echo "=== Step 2/8: Sweep meta-llama/Llama-3.1-8B-Instruct ==="
 update_status "sweep" "meta-llama/Llama-3.1-8B-Instruct" "running"
 
 uv run kvguard sweep \
@@ -110,7 +110,7 @@ set +e
 
 # Step 3: Verify data integrity
 echo ""
-echo "=== Step 3/6: Verify data integrity ==="
+echo "=== Step 3/8: Verify data integrity ==="
 update_status "verify" "all" "running"
 
 if uv run kvguard verify \
@@ -125,14 +125,17 @@ else
 fi
 
 # Step 4: Train predictor
+# Exclude observed_attention (GQA incompatibility, see Appendix A)
+# Exclude expected_attention (not reported in paper — paper uses 2 compressors: StreamingLLM, SnapKV)
 echo ""
-echo "=== Step 4/6: Train hazard predictor ==="
+echo "=== Step 4/8: Train hazard predictor ==="
 update_status "train" "all" "running"
 
 if uv run kvguard train \
     --results-dir results \
     --num-prompts "$NUM_PROMPTS" \
-    --output-dir models 2>&1 | tee -a "$LOG_FILE"; then
+    --output-dir models \
+    --press-exclude observed_attention,expected_attention 2>&1 | tee -a "$LOG_FILE"; then
     mark_completed "train"
     update_status "train" "all" "completed"
 else
@@ -142,7 +145,7 @@ fi
 
 # Step 5: Evaluate controller
 echo ""
-echo "=== Step 5/6: Evaluate controller ==="
+echo "=== Step 5/8: Evaluate controller ==="
 update_status "eval" "all" "running"
 
 if uv run kvguard eval-controller \
@@ -159,7 +162,7 @@ fi
 
 # Step 6: Run ablations
 echo ""
-echo "=== Step 6/6: Run ablations ==="
+echo "=== Step 6/8: Run ablations ==="
 update_status "ablations" "all" "running"
 
 if uv run python scripts/run_ablations.py 2>&1 | tee -a "$LOG_FILE"; then
@@ -168,6 +171,32 @@ if uv run python scripts/run_ablations.py 2>&1 | tee -a "$LOG_FILE"; then
 else
     record_error "ablations failed"
     update_status "ablations" "all" "failed"
+fi
+
+# Step 7: Generate figures for paper
+echo ""
+echo "=== Step 7/8: Generate figures ==="
+update_status "figures" "all" "running"
+
+if uv run python scripts/generate_figures.py 2>&1 | tee -a "$LOG_FILE"; then
+    mark_completed "figures"
+    update_status "figures" "all" "completed"
+else
+    record_error "figures failed"
+    update_status "figures" "all" "failed"
+fi
+
+# Step 8: Phase transition analysis
+echo ""
+echo "=== Step 8/8: Phase transition analysis ==="
+update_status "phase_transitions" "all" "running"
+
+if uv run python scripts/analyze_phase_transitions.py 2>&1 | tee -a "$LOG_FILE"; then
+    mark_completed "phase_transitions"
+    update_status "phase_transitions" "all" "completed"
+else
+    record_error "phase_transitions failed"
+    update_status "phase_transitions" "all" "failed"
 fi
 
 # ---------------------------------------------------------------------------
