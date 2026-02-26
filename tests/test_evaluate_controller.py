@@ -1,6 +1,5 @@
 """Tests for controller evaluation module."""
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +17,7 @@ from kvguard.evaluate_controller import (
     simulate_controller_on_trace,
 )
 from kvguard.features import feature_names
+from tests.helpers import make_result_json, make_signal_dict, write_result_file
 
 # ---------------------------------------------------------------------------
 # Tests: filter_traces_by_prompts
@@ -78,15 +78,12 @@ class TestStateMachinesAgree:
             0.1,  # 2 below tau_low → NORMAL
         ]
 
-        mode_history, safe_trigger, recovery_trigger = _run_predictor_state_machine(
-            hazard_probs, config
-        )
+        mode_history, safe_trigger = _run_predictor_state_machine(hazard_probs, config)
 
         assert mode_history[0] == Mode.NORMAL
         assert mode_history[1] == Mode.ALERT
         assert Mode.SAFE in mode_history
         assert safe_trigger is not None
-        assert recovery_trigger is None  # RECOVERY removed
 
     def test_risk_controller_transitions_match_standalone(self) -> None:
         """RiskController mode transitions match standalone when fed same risk scores.
@@ -125,7 +122,7 @@ class TestStateMachinesAgree:
         ]
 
         # Run standalone
-        mode_history_sm, _, _ = _run_predictor_state_machine(hazard_probs, config)
+        mode_history_sm, _ = _run_predictor_state_machine(hazard_probs, config)
 
         # Run through RiskController
         ctrl = RiskController(config)
@@ -143,17 +140,16 @@ class TestStateMachinesAgree:
     def test_empty_sequence(self) -> None:
         """Empty hazard_probs produces empty history."""
         config = ControllerConfig()
-        mode_history, safe_trigger, recovery_trigger = _run_predictor_state_machine([], config)
+        mode_history, safe_trigger = _run_predictor_state_machine([], config)
         assert mode_history == []
         assert safe_trigger is None
-        assert recovery_trigger is None
 
     def test_all_low_risk_stays_normal(self) -> None:
         """Consistently low-risk sequence stays in NORMAL."""
         config = ControllerConfig(tau_low=0.3, tau_high=0.7, k_escalate=3)
         hazard_probs = [0.1] * 20
 
-        mode_history, safe_trigger, _ = _run_predictor_state_machine(hazard_probs, config)
+        mode_history, safe_trigger = _run_predictor_state_machine(hazard_probs, config)
 
         assert all(m == Mode.NORMAL for m in mode_history)
         assert safe_trigger is None
@@ -163,10 +159,140 @@ class TestStateMachinesAgree:
         config = ControllerConfig(tau_low=0.3, tau_high=0.7, k_escalate=3, j_deescalate=3)
         hazard_probs = [0.9] * 20
 
-        mode_history, safe_trigger, _ = _run_predictor_state_machine(hazard_probs, config)
+        mode_history, safe_trigger = _run_predictor_state_machine(hazard_probs, config)
 
         assert Mode.SAFE in mode_history
         assert safe_trigger is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests: step_with_risk vs _run_predictor_state_machine equivalence
+# ---------------------------------------------------------------------------
+
+
+def _collect_step_with_risk_history(
+    hazard_probs: list[float],
+    config: ControllerConfig,
+) -> tuple[list[int], int | None]:
+    """Run RiskController.step_with_risk and collect mode history + safe trigger."""
+    ctrl = RiskController(config)
+    modes: list[int] = []
+    safe_trigger: int | None = None
+    for t, p in enumerate(hazard_probs):
+        action = ctrl.step_with_risk(p)
+        modes.append(int(action.mode))
+        if action.mode >= Mode.SAFE and safe_trigger is None:
+            safe_trigger = t
+    return modes, safe_trigger
+
+
+class TestStepWithRiskEquivalence:
+    """Verify _run_predictor_state_machine and RiskController.step_with_risk
+    produce identical mode histories for the same hazard probability sequences.
+
+    This is the key cross-validation for validation issue 4.3: two implementations
+    of the same state machine with no test verifying equivalence.
+    """
+
+    CFG = ControllerConfig(k_escalate=3, j_deescalate=3, tau_low=0.3, tau_high=0.7)
+
+    def _assert_equivalent(
+        self, hazard_probs: list[float], config: ControllerConfig | None = None
+    ) -> None:
+        """Assert both implementations produce identical mode histories and safe triggers."""
+        cfg = config or self.CFG
+        sm_modes, sm_trigger = _run_predictor_state_machine(hazard_probs, cfg)
+        ctrl_modes, ctrl_trigger = _collect_step_with_risk_history(hazard_probs, cfg)
+        assert sm_modes == ctrl_modes, (
+            f"Mode histories differ.\n  state_machine: {sm_modes}\n  controller:    {ctrl_modes}"
+        )
+        assert sm_trigger == ctrl_trigger, (
+            f"Safe triggers differ: state_machine={sm_trigger}, controller={ctrl_trigger}"
+        )
+
+    def test_all_low_risk(self) -> None:
+        """Both stay NORMAL for sustained low risk."""
+        self._assert_equivalent([0.1] * 20)
+
+    def test_all_high_risk(self) -> None:
+        """Both escalate identically with sustained high risk."""
+        self._assert_equivalent([0.9] * 20)
+
+    def test_escalation_to_alert(self) -> None:
+        """Both escalate NORMAL → ALERT after k consecutive above tau_low."""
+        self._assert_equivalent([0.5] * 5 + [0.1] * 10)
+
+    def test_full_escalation(self) -> None:
+        """NORMAL → ALERT → SAFE with increasing risk."""
+        self._assert_equivalent([0.5, 0.5, 0.5, 0.8, 0.8, 0.8] + [0.1] * 10)
+
+    def test_full_round_trip(self) -> None:
+        """NORMAL → ALERT → SAFE → ALERT → NORMAL."""
+        probs = (
+            [0.5] * 3  # → ALERT
+            + [0.8] * 3  # → SAFE
+            + [0.1] * 5  # → ALERT (j=3 below tau_high)
+            + [0.1] * 5  # → NORMAL (j=3 below tau_low)
+        )
+        self._assert_equivalent(probs)
+
+    def test_interrupted_escalation(self) -> None:
+        """Low-risk token interrupts escalation, resets consecutive counter."""
+        self._assert_equivalent([0.5, 0.5, 0.1, 0.5, 0.5, 0.5] + [0.1] * 5)
+
+    def test_dead_zone_values(self) -> None:
+        """Values exactly at tau_low reset both counters when in NORMAL."""
+        self._assert_equivalent([0.3] * 10)
+
+    def test_at_thresholds(self) -> None:
+        """Exact threshold values: > not >= for escalation."""
+        self._assert_equivalent([0.3] * 10 + [0.7] * 10)
+
+    def test_empty_sequence(self) -> None:
+        """Empty hazard prob list produces empty mode history."""
+        self._assert_equivalent([])
+
+    def test_single_token(self) -> None:
+        """Single token doesn't escalate (needs k=3 consecutive)."""
+        self._assert_equivalent([0.9])
+
+    def test_alternating_risk(self) -> None:
+        """Alternating high/low prevents escalation due to counter resets."""
+        self._assert_equivalent([0.9, 0.1] * 20)
+
+    def test_gradual_increase(self) -> None:
+        """Gradually increasing risk crosses thresholds at same token."""
+        self._assert_equivalent([i / 100.0 for i in range(100)])
+
+    def test_deescalation_from_safe(self) -> None:
+        """De-escalation from SAFE requires j consecutive below tau_high."""
+        cfg = ControllerConfig(k_escalate=2, j_deescalate=3, tau_low=0.3, tau_high=0.7)
+        probs = (
+            [0.5] * 3  # → ALERT
+            + [0.8] * 3  # → SAFE
+            + [0.5] * 5  # below tau_high → de-escalate to ALERT
+            + [0.1] * 5  # below tau_low → de-escalate to NORMAL
+        )
+        self._assert_equivalent(probs, config=cfg)
+
+    def test_various_configs(self) -> None:
+        """Equivalence holds across different config parameters."""
+        probs = [0.5] * 5 + [0.9] * 10 + [0.05] * 20
+        configs = [
+            ControllerConfig(k_escalate=1, j_deescalate=1, tau_low=0.2, tau_high=0.5),
+            ControllerConfig(k_escalate=5, j_deescalate=5, tau_low=0.4, tau_high=0.8),
+            ControllerConfig(k_escalate=2, j_deescalate=10, tau_low=0.1, tau_high=0.9),
+        ]
+        for cfg in configs:
+            self._assert_equivalent(probs, config=cfg)
+
+    def test_long_random_sequence(self) -> None:
+        """Equivalence holds on a 1000-token random sequence."""
+        import random
+
+        rng = random.Random(42)
+        probs = [rng.random() for _ in range(1000)]
+        self._assert_equivalent(probs)
 
 
 # ---------------------------------------------------------------------------
@@ -174,88 +300,18 @@ class TestStateMachinesAgree:
 # ---------------------------------------------------------------------------
 
 
-def _make_signal_dict(
-    *,
-    entropy: float = 1.0,
-    top1_prob: float = 0.5,
-    top5_prob: float = 0.9,
-) -> dict:
-    return {
-        "entropy": entropy,
-        "top1_prob": top1_prob,
-        "top5_prob": top5_prob,
-        "top1_token": "a",
-        "rank_of_chosen": 0,
-        "top20_logprobs": [-0.5] * 20,
-        "h_alts": 0.3,
-        "avg_logp": -2.0,
-        "delta_h": 0.1,
-        "rep_count": 0,
-        "is_thinking_token": False,
-    }
-
-
-def _make_result_json(
-    *,
-    n_tokens: int = 10,
-    press: str = "streaming_llm",
-    compression_ratio: float = 0.875,
-    prompt_id: str = "gsm8k_0",
-) -> dict:
-    sigs = [_make_signal_dict() for _ in range(n_tokens)]
-    return {
-        "prompt_id": prompt_id,
-        "prompt_text": "test",
-        "model": "test-model",
-        "press": press,
-        "compression_ratio": compression_ratio,
-        "max_new_tokens": 512,
-        "seed": 42,
-        "generated_text": "out",
-        "ground_truth": "42",
-        "predicted_answer": "42",
-        "correct": True,
-        "stop_reason": "eos",
-        "catastrophes": [],
-        "num_tokens_generated": n_tokens,
-        "cache_size_after_prefill": None,
-        "catastrophe_onsets": {},
-        "signals": sigs,
-    }
-
-
-def _write_result_file(
-    tmpdir: Path,
-    press: str,
-    ratio: float,
-    results: list[dict],
-    n_prompts: int = 50,
-) -> Path:
-    subdir = tmpdir / press
-    subdir.mkdir(parents=True, exist_ok=True)
-    fname = f"test-model_{ratio:.3f}_{n_prompts}p.json"
-    path = subdir / fname
-    data = {
-        "config": {
-            "model_name": "test-model",
-            "press_name": press,
-            "compression_ratio": ratio,
-        },
-        "summary": {},
-        "results": results,
-    }
-    path.write_text(json.dumps(data))
-    return path
-
-
 def test_safe_key_missing_warns(tmp_path: Path) -> None:
     """evaluate_controller skips budget when safe_key is missing."""
     # Only write streaming_llm at ratio=0.875 (no "none" at 0.0 baseline)
     results = [
-        _make_result_json(n_tokens=20, prompt_id="p0"),
-        _make_result_json(n_tokens=20, prompt_id="p1"),
+        make_result_json(
+            n_tokens=20, press="streaming_llm", compression_ratio=0.875, prompt_id="p0"
+        ),
+        make_result_json(
+            n_tokens=20, press="streaming_llm", compression_ratio=0.875, prompt_id="p1"
+        ),
     ]
-    _write_result_file(tmp_path, "streaming_llm", 0.875, results)
+    write_result_file(tmp_path, "streaming_llm", 0.875, results)
 
     # Train a minimal predictor
     n_features = len(feature_names())
@@ -410,6 +466,20 @@ class TestTraceInfo:
         # clamped to min(384, 511) = 384; looping is earlier
         assert trace.cfr_onset == 50
 
+    def test_cfr_onset_zero_tokens(self) -> None:
+        """cfr_onset returns None when num_tokens is 0 (avoids negative index)."""
+        trace = TraceInfo(
+            prompt_id="test",
+            press="snapkv",
+            compression_ratio=0.75,
+            catastrophes=["non_termination"],
+            catastrophe_onsets={},
+            num_tokens=0,
+            correct=False,
+            signals=[],
+        )
+        assert trace.cfr_onset is None
+
 
 # ---------------------------------------------------------------------------
 # Tests: simulate_controller_on_trace
@@ -433,7 +503,7 @@ class TestSimulateControllerOnTrace:
     def test_no_trigger_on_clean_trace(self) -> None:
         """Controller should not trigger SAFE on a non-catastrophe trace with low risk."""
         n_tokens = 30
-        signals = [_make_signal_dict() for _ in range(n_tokens)]
+        signals = [make_signal_dict() for _ in range(n_tokens)]
         trace = TraceInfo(
             prompt_id="clean",
             press="snapkv",
@@ -453,7 +523,7 @@ class TestSimulateControllerOnTrace:
     def test_trigger_before_onset_gives_lead_time(self) -> None:
         """When controller triggers before cfr_onset, lead_time should be positive."""
         n_tokens = 30
-        signals = [_make_signal_dict() for _ in range(n_tokens)]
+        signals = [make_signal_dict() for _ in range(n_tokens)]
         trace = TraceInfo(
             prompt_id="looping",
             press="snapkv",
@@ -528,3 +598,240 @@ class TestFormatEvalTable:
         table = format_eval_table(result)
         assert len(table) > 0
         assert "snapkv" in table
+
+    def test_summary_line(self) -> None:
+        """format_eval_table includes a summary line with overall stats."""
+        result = EvalResult(
+            safe_compression_ratio=0.0,
+            budgets=[
+                BudgetResult(
+                    press="streaming_llm",
+                    compression_ratio=0.875,
+                    n_prompts=50,
+                    baseline_cfr_count=20,
+                    baseline_cfr=0.4,
+                    baseline_accuracy=0.6,
+                    controller_triggered_count=15,
+                    triggered_before_onset=10,
+                    catastrophes_prevented=8,
+                    controlled_cfr_count=12,
+                    controlled_cfr=0.24,
+                    cfr_reduction_abs=0.16,
+                    cfr_reduction_pct=40.0,
+                    mean_trigger_token=50.0,
+                    false_trigger_count=3,
+                ),
+            ],
+        )
+        table = format_eval_table(result)
+        assert "OVERALL" in table
+        assert "8/20" in table
+
+    def test_no_trigger_token(self) -> None:
+        """format_eval_table handles None mean_trigger_token."""
+        result = EvalResult(
+            safe_compression_ratio=0.0,
+            budgets=[
+                BudgetResult(
+                    press="snapkv",
+                    compression_ratio=0.75,
+                    n_prompts=10,
+                    baseline_cfr_count=0,
+                    baseline_cfr=0.0,
+                    baseline_accuracy=1.0,
+                    controller_triggered_count=0,
+                    triggered_before_onset=0,
+                    catastrophes_prevented=0,
+                    controlled_cfr_count=0,
+                    controlled_cfr=0.0,
+                    cfr_reduction_abs=0.0,
+                    cfr_reduction_pct=0.0,
+                    mean_trigger_token=None,
+                    false_trigger_count=0,
+                ),
+            ],
+        )
+        table = format_eval_table(result)
+        assert "-" in table  # None renders as "-"
+
+
+# ---------------------------------------------------------------------------
+# Tests: eval_result_to_dict
+# ---------------------------------------------------------------------------
+
+
+class TestEvalResultToDict:
+    def test_serialization_round_trip(self) -> None:
+        """eval_result_to_dict produces a dict matching the EvalResult structure."""
+        from kvguard.evaluate_controller import eval_result_to_dict
+
+        result = EvalResult(
+            safe_compression_ratio=0.0,
+            budgets=[
+                BudgetResult(
+                    press="snapkv",
+                    compression_ratio=0.875,
+                    n_prompts=100,
+                    baseline_cfr_count=40,
+                    baseline_cfr=0.4,
+                    baseline_accuracy=0.6,
+                    controller_triggered_count=30,
+                    triggered_before_onset=25,
+                    catastrophes_prevented=20,
+                    controlled_cfr_count=20,
+                    controlled_cfr=0.2,
+                    cfr_reduction_abs=0.2,
+                    cfr_reduction_pct=50.0,
+                    mean_trigger_token=45.3,
+                    false_trigger_count=5,
+                ),
+            ],
+        )
+        d = eval_result_to_dict(result)
+        assert d["safe_compression_ratio"] == 0.0
+        assert len(d["budgets"]) == 1
+        b = d["budgets"][0]
+        assert b["press"] == "snapkv"
+        assert b["catastrophes_prevented"] == 20
+        assert b["cfr_reduction_pct"] == 50.0
+        assert b["mean_trigger_token"] == 45.3
+
+    def test_empty_budgets(self) -> None:
+        """eval_result_to_dict with no budgets."""
+        from kvguard.evaluate_controller import eval_result_to_dict
+
+        result = EvalResult(safe_compression_ratio=0.5)
+        d = eval_result_to_dict(result)
+        assert d["safe_compression_ratio"] == 0.5
+        assert d["budgets"] == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: evaluate_controller (core function)
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateController:
+    """Integration tests for the evaluate_controller function."""
+
+    def _write_traces(self, tmp_path: Path) -> None:
+        """Write baseline + compressed traces for controller evaluation."""
+        # Baseline (none, 0.0) — all correct, no catastrophes
+        baseline_results = [
+            make_result_json(n_tokens=30, correct=True, catastrophes=[], prompt_id=f"p{i}")
+            for i in range(5)
+        ]
+        write_result_file(tmp_path, "none", 0.0, baseline_results)
+
+        # Compressed (streaming_llm, 0.875) — mix of correct and catastrophe
+        # NOTE: must set press= and compression_ratio= on each result dict
+        # because load_all_traces reads them from the RunResult, not the config.
+        compressed_results = [
+            make_result_json(
+                n_tokens=30,
+                correct=True,
+                catastrophes=[],
+                prompt_id="p0",
+                press="streaming_llm",
+                compression_ratio=0.875,
+            ),
+            make_result_json(
+                n_tokens=30,
+                correct=True,
+                catastrophes=[],
+                prompt_id="p1",
+                press="streaming_llm",
+                compression_ratio=0.875,
+            ),
+            make_result_json(
+                n_tokens=30,
+                correct=False,
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 20},
+                prompt_id="p2",
+                press="streaming_llm",
+                compression_ratio=0.875,
+            ),
+            make_result_json(
+                n_tokens=30,
+                correct=False,
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 20},
+                prompt_id="p3",
+                press="streaming_llm",
+                compression_ratio=0.875,
+            ),
+            make_result_json(
+                n_tokens=30,
+                correct=False,
+                catastrophes=["wrong_answer"],
+                prompt_id="p4",
+                predicted_answer="99",
+                press="streaming_llm",
+                compression_ratio=0.875,
+            ),
+        ]
+        write_result_file(tmp_path, "streaming_llm", 0.875, compressed_results)
+
+    def _make_predictor(self) -> xgb.XGBClassifier:
+        """Create a minimal trained predictor."""
+        n_features = len(feature_names())
+        rng = np.random.RandomState(42)
+        X = rng.randn(200, n_features).astype(np.float32)
+        y = (rng.random(200) > 0.5).astype(np.float32)
+        predictor = xgb.XGBClassifier(n_estimators=5, max_depth=2, verbosity=0, random_state=42)
+        predictor.fit(X, y)
+        return predictor
+
+    def test_returns_eval_result(self, tmp_path: Path) -> None:
+        """evaluate_controller returns EvalResult with budget entries."""
+        self._write_traces(tmp_path)
+        predictor = self._make_predictor()
+        config = ControllerConfig(safe_compression_ratio=0.0)
+        result = evaluate_controller(tmp_path, predictor, num_prompts=50, controller_config=config)
+        assert isinstance(result, EvalResult)
+        assert result.safe_compression_ratio == 0.0
+        # Should have 1 budget: streaming_llm at 0.875
+        assert len(result.budgets) == 1
+        b = result.budgets[0]
+        assert b.press == "streaming_llm"
+        assert b.compression_ratio == 0.875
+
+    def test_baseline_cfr_count(self, tmp_path: Path) -> None:
+        """Baseline CFR count matches number of CFR catastrophe traces."""
+        self._write_traces(tmp_path)
+        predictor = self._make_predictor()
+        config = ControllerConfig(safe_compression_ratio=0.0)
+        result = evaluate_controller(tmp_path, predictor, num_prompts=50, controller_config=config)
+        b = result.budgets[0]
+        # 2 looping traces out of 5 total → baseline_cfr_count = 2
+        # (wrong_answer doesn't count toward CFR)
+        assert b.baseline_cfr_count == 2
+        assert b.n_prompts == 5
+
+    def test_holdout_filter(self, tmp_path: Path) -> None:
+        """Holdout prompt IDs restricts evaluation to those prompts only."""
+        self._write_traces(tmp_path)
+        predictor = self._make_predictor()
+        config = ControllerConfig(safe_compression_ratio=0.0)
+        result = evaluate_controller(
+            tmp_path,
+            predictor,
+            num_prompts=50,
+            controller_config=config,
+            holdout_prompt_ids={"p0", "p2"},
+        )
+        b = result.budgets[0]
+        assert b.n_prompts == 2
+        # Only p2 has CFR catastrophe in the holdout set
+        assert b.baseline_cfr_count == 1
+
+    def test_skips_baseline_press(self, tmp_path: Path) -> None:
+        """evaluate_controller skips 'none' press (no compression to control)."""
+        self._write_traces(tmp_path)
+        predictor = self._make_predictor()
+        config = ControllerConfig(safe_compression_ratio=0.0)
+        result = evaluate_controller(tmp_path, predictor, num_prompts=50, controller_config=config)
+        # Only streaming_llm budget, not "none"
+        presses = [b.press for b in result.budgets]
+        assert "none" not in presses

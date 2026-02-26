@@ -117,7 +117,9 @@ class TestVerifySweep:
     def test_full_sweep_passes(self, tmp_path: Path) -> None:
         """A complete, well-formed sweep should pass all checks."""
         _build_full_sweep(tmp_path)
-        report = verify_sweep(tmp_path, num_prompts=50)
+        report = verify_sweep(
+            tmp_path, num_prompts=50, methods=["streaming_llm", "snapkv", "observed_attention"]
+        )
         assert isinstance(report, VerificationReport)
         assert report.passed, [
             f"{c.name}: {c.status} ({c.actual})" for c in report.checks if c.status != "PASS"
@@ -177,7 +179,9 @@ class TestVerifySweep:
     def test_to_dict(self, tmp_path: Path) -> None:
         """Report should serialize to dict."""
         _build_full_sweep(tmp_path)
-        report = verify_sweep(tmp_path, num_prompts=50)
+        report = verify_sweep(
+            tmp_path, num_prompts=50, methods=["streaming_llm", "snapkv", "observed_attention"]
+        )
         d = report.to_dict()
         assert "passed" in d
         assert "checks" in d
@@ -198,7 +202,67 @@ class TestVerifySweep:
             for i in range(50)
         ]
         _write_config_file(tmp_path, "none", 0.0, results)
-        report = verify_sweep(tmp_path, num_prompts=50)
+        report = verify_sweep(
+            tmp_path, num_prompts=50, methods=["streaming_llm", "snapkv", "observed_attention"]
+        )
         baseline_check = next((c for c in report.checks if c.name == "baseline_sanity"), None)
         assert baseline_check is not None
         assert baseline_check.status == "WARN"
+
+
+class TestCompressionVerification:
+    def test_missing_cache_size_warns(self, tmp_path: Path) -> None:
+        """Compressed traces without cache_size_after_prefill should warn."""
+        _build_full_sweep(tmp_path)
+        report = verify_sweep(
+            tmp_path, num_prompts=50, methods=["streaming_llm", "snapkv", "observed_attention"]
+        )
+        check = next((c for c in report.checks if c.name == "compression_verification"), None)
+        assert check is not None
+        # Default _make_result sets cache_size_after_prefill=None
+        assert check.status == "WARN"
+        assert "Cannot verify" in check.detail
+
+    def test_cache_size_present_passes(self, tmp_path: Path) -> None:
+        """Compressed traces with cache_size_after_prefill should pass."""
+        results = [
+            {
+                **_make_result(prompt_id=f"p{i}", press="streaming_llm", ratio=0.5),
+                "cache_size_after_prefill": 128,
+            }
+            for i in range(50)
+        ]
+        _write_config_file(tmp_path, "streaming_llm", 0.5, results)
+        # Also need baseline to avoid file_count failures
+        baseline = [_make_result(prompt_id=f"p{i}", press="none", ratio=0.0) for i in range(50)]
+        _write_config_file(tmp_path, "none", 0.0, baseline)
+        report = verify_sweep(tmp_path, num_prompts=50)
+        check = next((c for c in report.checks if c.name == "compression_verification"), None)
+        assert check is not None
+        assert check.status == "PASS"
+
+    def test_partial_cache_size_warns(self, tmp_path: Path) -> None:
+        """Some traces with cache_size and some without should warn."""
+        results = []
+        for i in range(50):
+            r = _make_result(prompt_id=f"p{i}", press="streaming_llm", ratio=0.5)
+            if i < 25:
+                r["cache_size_after_prefill"] = 128
+            results.append(r)
+        _write_config_file(tmp_path, "streaming_llm", 0.5, results)
+        baseline = [_make_result(prompt_id=f"p{i}", press="none", ratio=0.0) for i in range(50)]
+        _write_config_file(tmp_path, "none", 0.0, baseline)
+        report = verify_sweep(tmp_path, num_prompts=50)
+        check = next((c for c in report.checks if c.name == "compression_verification"), None)
+        assert check is not None
+        assert check.status == "WARN"
+        assert "25/50" in check.actual
+
+    def test_baseline_not_checked(self, tmp_path: Path) -> None:
+        """Baseline (no compression) should not be checked for cache_size."""
+        baseline = [_make_result(prompt_id=f"p{i}", press="none", ratio=0.0) for i in range(50)]
+        _write_config_file(tmp_path, "none", 0.0, baseline)
+        report = verify_sweep(tmp_path, num_prompts=50)
+        check = next((c for c in report.checks if c.name == "compression_verification"), None)
+        # No compressed traces → check should not appear
+        assert check is None

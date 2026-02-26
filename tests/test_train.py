@@ -19,97 +19,7 @@ from kvguard.train import (
     split_by_trace,
     train_predictor,
 )
-
-# ---------------------------------------------------------------------------
-# Helpers — reuse patterns from test_features.py
-# ---------------------------------------------------------------------------
-
-
-def _make_signal_dict(
-    *,
-    entropy: float = 1.0,
-    top1_prob: float = 0.5,
-    top5_prob: float = 0.9,
-    rank_of_chosen: int = 0,
-    top20_logprobs: list[float] | None = None,
-    h_alts: float = 0.3,
-    avg_logp: float = -2.0,
-    delta_h: float | None = 0.1,
-    rep_count: int = 0,
-    is_thinking_token: bool = False,
-) -> dict:
-    return {
-        "entropy": entropy,
-        "top1_prob": top1_prob,
-        "top5_prob": top5_prob,
-        "top1_token": "a",
-        "rank_of_chosen": rank_of_chosen,
-        "top20_logprobs": top20_logprobs if top20_logprobs is not None else [-0.5] * 20,
-        "h_alts": h_alts,
-        "avg_logp": avg_logp,
-        "delta_h": delta_h,
-        "rep_count": rep_count,
-        "is_thinking_token": is_thinking_token,
-    }
-
-
-def _make_result_json(
-    *,
-    n_tokens: int = 50,
-    press: str = "none",
-    compression_ratio: float = 0.0,
-    catastrophes: list[str] | None = None,
-    catastrophe_onsets: dict[str, int] | None = None,
-    prompt_id: str = "gsm8k_0",
-) -> dict:
-    sigs = []
-    for t in range(n_tokens):
-        sigs.append(
-            _make_signal_dict(
-                entropy=1.0 + 0.01 * t,
-                delta_h=0.01 if t > 0 else None,
-                rep_count=max(0, t - 8),
-            )
-        )
-    return {
-        "prompt_id": prompt_id,
-        "prompt_text": "test prompt",
-        "model": "test-model",
-        "press": press,
-        "compression_ratio": compression_ratio,
-        "max_new_tokens": 512,
-        "seed": 42,
-        "generated_text": "test output",
-        "ground_truth": "42",
-        "predicted_answer": "42",
-        "correct": True,
-        "stop_reason": "eos",
-        "catastrophes": catastrophes or [],
-        "num_tokens_generated": n_tokens,
-        "cache_size_after_prefill": None,
-        "catastrophe_onsets": catastrophe_onsets or {},
-        "signals": sigs,
-    }
-
-
-def _write_result_file(
-    tmpdir: Path, press: str, ratio: float, results: list[dict], n_prompts: int = 50
-) -> Path:
-    subdir = tmpdir / press
-    subdir.mkdir(parents=True, exist_ok=True)
-    fname = f"test-model_{ratio:.3f}_{n_prompts}p.json"
-    path = subdir / fname
-    data = {
-        "config": {
-            "model_name": "test-model",
-            "press_name": press,
-            "compression_ratio": ratio,
-        },
-        "summary": {},
-        "results": results,
-    }
-    path.write_text(json.dumps(data))
-    return path
+from tests.helpers import make_result_json, write_result_file
 
 
 def _make_synthetic_dataset(
@@ -311,6 +221,19 @@ class TestTrainPredictor:
         model = train_predictor(ds.X, ds.y)
         assert isinstance(model, xgb.XGBClassifier)
 
+    def test_all_negative_labels_warns(self) -> None:
+        """Training on all-negative data logs a warning."""
+        from loguru import logger
+
+        messages: list[str] = []
+        sink_id = logger.add(lambda msg: messages.append(msg.record["message"]), level="WARNING")
+        try:
+            ds = _make_synthetic_dataset(catastrophe_fraction=0.0)
+            train_predictor(ds.X, ds.y)
+        finally:
+            logger.remove(sink_id)
+        assert any("No positive examples" in m for m in messages)
+
 
 # ---------------------------------------------------------------------------
 # Tests: evaluate_predictor
@@ -375,6 +298,19 @@ class TestLeaveOneOutCV:
         assert "mean_f1" in d
         assert "folds" in d
 
+    def test_none_baseline_excluded(self) -> None:
+        """Baseline (none) press should not appear as a held-out fold."""
+        ds = _make_synthetic_dataset(
+            presses=["streaming_llm", "snapkv", "none"],
+            catastrophe_fraction=0.5,
+            random_state=99,
+        )
+        cv = leave_one_out_cv(ds, xgb_params={"n_estimators": 10})
+        held_out_presses = {f.held_out_press for f in cv.folds}
+        assert "none" not in held_out_presses
+        for fold in cv.folds:
+            assert "none" not in fold.train_presses
+
 
 # ---------------------------------------------------------------------------
 # Tests: load_all_results (integration with features.build_dataset)
@@ -383,8 +319,8 @@ class TestLeaveOneOutCV:
 
 class TestLoadAllResults:
     def test_loads_from_files(self, tmp_path: Path) -> None:
-        results = [_make_result_json(n_tokens=20, press="none")]
-        _write_result_file(tmp_path, "none", 0.0, results)
+        results = [make_result_json(n_tokens=20, press="none")]
+        write_result_file(tmp_path, "none", 0.0, results)
         ds = load_all_results(tmp_path, num_prompts=50, horizon=32)
         assert isinstance(ds, Dataset)
         assert ds.X.shape[0] == 20
@@ -400,11 +336,11 @@ class TestRunTraining:
         """Full pipeline: files → model + metrics."""
         # Create result files with mix of catastrophe and clean traces
         results_none = [
-            _make_result_json(n_tokens=50, press="none", prompt_id="p0"),
-            _make_result_json(n_tokens=50, press="none", prompt_id="p1"),
+            make_result_json(n_tokens=50, press="none", prompt_id="p0"),
+            make_result_json(n_tokens=50, press="none", prompt_id="p1"),
         ]
         results_slm = [
-            _make_result_json(
+            make_result_json(
                 n_tokens=50,
                 press="streaming_llm",
                 compression_ratio=0.5,
@@ -412,7 +348,7 @@ class TestRunTraining:
                 catastrophe_onsets={"looping": 30},
                 prompt_id="p0",
             ),
-            _make_result_json(
+            make_result_json(
                 n_tokens=50,
                 press="streaming_llm",
                 compression_ratio=0.5,
@@ -420,15 +356,15 @@ class TestRunTraining:
                 catastrophe_onsets={"looping": 25},
                 prompt_id="p1",
             ),
-            _make_result_json(
+            make_result_json(
                 n_tokens=50,
                 press="streaming_llm",
                 compression_ratio=0.5,
                 prompt_id="p2",
             ),
         ]
-        _write_result_file(tmp_path, "none", 0.0, results_none)
-        _write_result_file(tmp_path, "streaming_llm", 0.5, results_slm)
+        write_result_file(tmp_path, "none", 0.0, results_none)
+        write_result_file(tmp_path, "streaming_llm", 0.5, results_slm)
 
         out_dir = tmp_path / "output"
         result = run_training(
@@ -600,3 +536,261 @@ class TestEarlyStopping:
         assert isinstance(model, xgb.XGBClassifier)
         proba = model.predict_proba(ds.X[:5])
         assert proba.shape == (5, 2)
+
+
+# ---------------------------------------------------------------------------
+# Tests: exclude_features
+# ---------------------------------------------------------------------------
+
+
+class TestExcludeFeatures:
+    """Tests for exclude_features parameter in run_training()."""
+
+    @pytest.fixture()
+    def result_dir(self, tmp_path: Path) -> Path:
+        """Create synthetic result files for testing."""
+        results_none = [
+            make_result_json(n_tokens=50, press="none", prompt_id="p0"),
+            make_result_json(n_tokens=50, press="none", prompt_id="p1"),
+        ]
+        results_slm = [
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 30},
+                prompt_id="p0",
+            ),
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 25},
+                prompt_id="p1",
+            ),
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                prompt_id="p2",
+            ),
+        ]
+        write_result_file(tmp_path, "none", 0.0, results_none)
+        write_result_file(tmp_path, "streaming_llm", 0.5, results_slm)
+        return tmp_path
+
+    def test_exclude_features_reduces_dimensions(self, result_dir: Path) -> None:
+        """Excluding features produces a model trained on fewer dimensions."""
+        out_full = result_dir / "out_full"
+        result_full = run_training(
+            result_dir,
+            num_prompts=50,
+            horizon=16,
+            val_fraction=0.3,
+            xgb_params={"n_estimators": 10},
+            run_cv=False,
+            output_dir=out_full,
+        )
+
+        out_ablated = result_dir / "out_ablated"
+        result_ablated = run_training(
+            result_dir,
+            num_prompts=50,
+            horizon=16,
+            val_fraction=0.3,
+            xgb_params={"n_estimators": 10},
+            run_cv=False,
+            output_dir=out_ablated,
+            exclude_features=["compression_ratio"],
+        )
+
+        assert result_ablated.model.n_features_in_ == result_full.model.n_features_in_ - 1
+
+    def test_exclude_features_saved_in_metrics(self, result_dir: Path) -> None:
+        """Excluded features are recorded in metrics.json for provenance."""
+        out_dir = result_dir / "output"
+        run_training(
+            result_dir,
+            num_prompts=50,
+            horizon=16,
+            val_fraction=0.3,
+            xgb_params={"n_estimators": 10},
+            run_cv=False,
+            output_dir=out_dir,
+            exclude_features=["compression_ratio", "rep_count"],
+        )
+
+        metrics = json.loads((out_dir / "metrics.json").read_text())
+        assert metrics["exclude_features"] == ["compression_ratio", "rep_count"]
+        assert "compression_ratio" not in metrics["feature_names"]
+        assert "rep_count" not in metrics["feature_names"]
+
+    def test_exclude_features_none_is_noop(self, result_dir: Path) -> None:
+        """exclude_features=None produces full feature set."""
+        from kvguard.features import feature_names
+
+        out_dir = result_dir / "output"
+        result = run_training(
+            result_dir,
+            num_prompts=50,
+            horizon=16,
+            val_fraction=0.3,
+            xgb_params={"n_estimators": 10},
+            run_cv=False,
+            output_dir=out_dir,
+            exclude_features=None,
+        )
+        assert result.model.n_features_in_ == len(feature_names())
+
+
+# ---------------------------------------------------------------------------
+# Tests: model_filter and press_exclude
+# ---------------------------------------------------------------------------
+
+
+class TestRunTrainingFilters:
+    """Tests for model_filter and press_exclude parameters."""
+
+    def test_model_filter(self, tmp_path: Path) -> None:
+        """model_filter restricts traces to matching model."""
+        # Write results for two different models
+        results_a = [
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                prompt_id="p0",
+                model="model-a",
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 30},
+            ),
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                prompt_id="p1",
+                model="model-a",
+            ),
+        ]
+        results_b = [
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                prompt_id="p0",
+                model="model-b",
+            ),
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                prompt_id="p1",
+                model="model-b",
+            ),
+        ]
+        # Baselines for both models
+        baseline_a = [
+            make_result_json(n_tokens=50, press="none", prompt_id="p0", model="model-a"),
+            make_result_json(n_tokens=50, press="none", prompt_id="p1", model="model-a"),
+        ]
+        baseline_b = [
+            make_result_json(n_tokens=50, press="none", prompt_id="p0", model="model-b"),
+            make_result_json(n_tokens=50, press="none", prompt_id="p1", model="model-b"),
+        ]
+
+        write_result_file(tmp_path, "streaming_llm", 0.5, results_a, model="model-a")
+        write_result_file(tmp_path, "streaming_llm", 0.5, results_b, model="model-b")
+        write_result_file(tmp_path, "none", 0.0, baseline_a, model="model-a")
+        write_result_file(tmp_path, "none", 0.0, baseline_b, model="model-b")
+
+        # Train with only model-a (has catastrophes)
+        out_a = tmp_path / "out_a"
+        result_a = run_training(
+            tmp_path,
+            num_prompts=50,
+            horizon=16,
+            val_fraction=0.3,
+            xgb_params={"n_estimators": 10},
+            run_cv=False,
+            output_dir=out_a,
+            model_filter="model-a",
+        )
+        # Train with only model-b (no catastrophes)
+        out_b = tmp_path / "out_b"
+        result_b = run_training(
+            tmp_path,
+            num_prompts=50,
+            horizon=16,
+            val_fraction=0.3,
+            xgb_params={"n_estimators": 10},
+            run_cv=False,
+            output_dir=out_b,
+            model_filter="model-b",
+        )
+
+        # model-a has catastrophes, model-b doesn't — sample counts differ
+        n_tokens_a = result_a.val_metrics.n_samples + result_a.train_metrics.n_samples
+        n_tokens_b = result_b.val_metrics.n_samples + result_b.train_metrics.n_samples
+        # Each model has 4 traces × 50 tokens = 200 tokens total
+        assert n_tokens_a == 200
+        assert n_tokens_b == 200
+
+    def test_press_exclude(self, tmp_path: Path) -> None:
+        """press_exclude removes specified compressor traces."""
+        results_slm = [
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                prompt_id="p0",
+                catastrophes=["looping"],
+                catastrophe_onsets={"looping": 30},
+            ),
+            make_result_json(
+                n_tokens=50,
+                press="streaming_llm",
+                compression_ratio=0.5,
+                prompt_id="p1",
+            ),
+        ]
+        results_snap = [
+            make_result_json(
+                n_tokens=50,
+                press="snapkv",
+                compression_ratio=0.5,
+                prompt_id="p0",
+            ),
+            make_result_json(
+                n_tokens=50,
+                press="snapkv",
+                compression_ratio=0.5,
+                prompt_id="p1",
+            ),
+        ]
+        baseline = [
+            make_result_json(n_tokens=50, press="none", prompt_id="p0"),
+            make_result_json(n_tokens=50, press="none", prompt_id="p1"),
+        ]
+
+        write_result_file(tmp_path, "streaming_llm", 0.5, results_slm)
+        write_result_file(tmp_path, "snapkv", 0.5, results_snap)
+        write_result_file(tmp_path, "none", 0.0, baseline)
+
+        # Train excluding snapkv
+        out_dir = tmp_path / "output"
+        result = run_training(
+            tmp_path,
+            num_prompts=50,
+            horizon=16,
+            val_fraction=0.3,
+            xgb_params={"n_estimators": 10},
+            run_cv=False,
+            output_dir=out_dir,
+            press_exclude=["snapkv"],
+        )
+
+        # Should have 4 traces (2 none + 2 streaming_llm) × 50 tokens = 200
+        total_tokens = result.val_metrics.n_samples + result.train_metrics.n_samples
+        assert total_tokens == 200

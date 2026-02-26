@@ -128,6 +128,78 @@ class TestRepetitionCounts:
         assert result[5] == 1
 
 
+class TestExtractSignalsEdgeCases:
+    def setup_method(self) -> None:
+        self.tokenizer = FakeTokenizer()
+
+    def test_small_vocab(self) -> None:
+        """Vocab smaller than 20 — top-k should handle gracefully."""
+        logits = torch.randn(10)
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer)
+        assert len(sig.top20_logprobs) == 10  # min(20, vocab_size)
+        assert sig.entropy >= 0
+
+    def test_extremely_peaked(self) -> None:
+        """Near-degenerate distribution: one token has all mass."""
+        logits = torch.full((1000,), -100.0)
+        logits[7] = 100.0
+        sig = extract_signals(logits, chosen_token_id=7, tokenizer=self.tokenizer)
+        assert sig.top1_prob > 0.99
+        assert sig.entropy < 0.01
+        assert sig.h_alts < 0.1
+
+    def test_two_token_vocab(self) -> None:
+        """Minimal vocab size."""
+        logits = torch.tensor([5.0, -5.0])
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer)
+        assert len(sig.top20_logprobs) == 2
+        assert sig.rank_of_chosen == 0
+
+    def test_delta_h_positive(self) -> None:
+        """Delta H is positive when current entropy > prev_entropy."""
+        logits = torch.zeros(100)  # uniform → high entropy
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer, prev_entropy=0.1)
+        assert sig.delta_h is not None
+        assert sig.delta_h > 0
+
+    def test_delta_h_negative(self) -> None:
+        """Delta H is negative when current entropy < prev_entropy."""
+        logits = torch.full((100,), -100.0)
+        logits[0] = 10.0  # peaked → low entropy
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer, prev_entropy=5.0)
+        assert sig.delta_h is not None
+        assert sig.delta_h < 0
+
+
+class TestRepetitionCountsEdgeCases:
+    def test_single_token(self) -> None:
+        """Single token in sequence — shorter than window."""
+        result = compute_repetition_counts([42], window_size=20)
+        assert result == [0]
+
+    def test_all_same_token(self) -> None:
+        """All identical tokens — every window after the first should match."""
+        token_ids = [42] * 40
+        result = compute_repetition_counts(token_ids, window_size=20)
+        # First complete window (pos 19): count = 0
+        assert result[19] == 0
+        # The window [42]*20 starting at pos 1 matches the one at pos 0
+        # By pos 20, the window has been seen once before
+        assert result[20] > 0
+
+    def test_window_equals_sequence(self) -> None:
+        """Window size equals sequence length — exactly one window, count 0."""
+        token_ids = list(range(20))
+        result = compute_repetition_counts(token_ids, window_size=20)
+        assert result[19] == 0
+
+    def test_window_larger_than_sequence(self) -> None:
+        """Window larger than sequence — all zeros."""
+        token_ids = [1, 2, 3]
+        result = compute_repetition_counts(token_ids, window_size=20)
+        assert all(c == 0 for c in result)
+
+
 class TestThinkingTokens:
     def test_known_thinking_tokens(self) -> None:
         for token in ["so", "wait", "therefore", "hmm", "but", "however"]:
@@ -136,3 +208,58 @@ class TestThinkingTokens:
     def test_non_thinking_tokens(self) -> None:
         for token in ["the", "42", "=", "cat"]:
             assert token not in THINKING_TOKENS
+
+    def test_thinking_tokens_is_frozenset(self) -> None:
+        """THINKING_TOKENS should be immutable."""
+        assert isinstance(THINKING_TOKENS, frozenset)
+
+    def test_thinking_tokens_count(self) -> None:
+        """THINKING_TOKENS should have the documented count (32)."""
+        assert len(THINKING_TOKENS) == 32
+
+
+class TestExtractSignalsBoundary:
+    """Boundary and stress tests for signal extraction."""
+
+    def setup_method(self) -> None:
+        self.tokenizer = FakeTokenizer()
+
+    def test_negative_logits(self) -> None:
+        """All-negative logits should still produce valid signals."""
+        logits = torch.full((100,), -5.0)
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer)
+        assert sig.entropy >= 0
+        assert 0.0 <= sig.top1_prob <= 1.0
+        assert 0.0 <= sig.top5_prob <= 1.0
+
+    def test_large_vocab(self) -> None:
+        """Large vocabulary (50k) should work without issue."""
+        logits = torch.randn(50000)
+        sig = extract_signals(logits, chosen_token_id=100, tokenizer=self.tokenizer)
+        assert len(sig.top20_logprobs) == 20
+        assert sig.entropy > 0
+
+    def test_avg_logp_bounded(self) -> None:
+        """avg_logp should be negative (log probabilities)."""
+        logits = torch.randn(100)
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer)
+        assert sig.avg_logp <= 0.0
+
+    def test_top5_prob_ge_top1_prob(self) -> None:
+        """top5_prob should always be >= top1_prob."""
+        logits = torch.randn(100)
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer)
+        assert sig.top5_prob >= sig.top1_prob
+
+    def test_top20_logprobs_sorted_descending(self) -> None:
+        """top20_logprobs should be in descending order."""
+        logits = torch.randn(100)
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer)
+        for i in range(len(sig.top20_logprobs) - 1):
+            assert sig.top20_logprobs[i] >= sig.top20_logprobs[i + 1]
+
+    def test_h_alts_nonnegative(self) -> None:
+        """Competitor entropy should always be non-negative."""
+        logits = torch.randn(100)
+        sig = extract_signals(logits, chosen_token_id=0, tokenizer=self.tokenizer)
+        assert sig.h_alts >= 0.0

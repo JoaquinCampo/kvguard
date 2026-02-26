@@ -1,93 +1,14 @@
 """Integration test: full pipeline from result files to evaluated model."""
 
-import json
 from pathlib import Path
 
 import numpy as np
 
+from kvguard.controller import ControllerConfig
+from kvguard.evaluate_controller import EvalResult, evaluate_controller
 from kvguard.features import build_dataset
 from kvguard.train import evaluate_predictor, split_by_prompt, train_predictor
-
-
-def _make_signal_dict(*, entropy=1.0, rep_count=0, delta_h=0.1, **kw):
-    """Minimal signal dict for integration tests."""
-    return {
-        "entropy": entropy,
-        "top1_prob": kw.get("top1_prob", 0.5),
-        "top5_prob": kw.get("top5_prob", 0.9),
-        "top1_token": "a",
-        "rank_of_chosen": 0,
-        "top20_logprobs": [-0.5] * 20,
-        "h_alts": kw.get("h_alts", 0.3),
-        "avg_logp": kw.get("avg_logp", -2.0),
-        "delta_h": delta_h,
-        "rep_count": rep_count,
-        "is_thinking_token": False,
-    }
-
-
-def _make_result(
-    *,
-    prompt_id: str,
-    press: str = "none",
-    compression_ratio: float = 0.0,
-    n_tokens: int = 50,
-    catastrophes: list[str] | None = None,
-    catastrophe_onsets: dict[str, int] | None = None,
-) -> dict:
-    """Build a result dict as it appears in sweep JSON."""
-    sigs = []
-    for t in range(n_tokens):
-        # Catastrophe traces: high entropy + rep after onset
-        is_cat = catastrophes and catastrophe_onsets
-        onset = min(catastrophe_onsets.values()) if catastrophe_onsets else n_tokens
-        if is_cat and t >= onset:
-            sigs.append(
-                _make_signal_dict(
-                    entropy=4.0 + 0.1 * t,
-                    rep_count=t - onset + 1,
-                    delta_h=1.5,
-                )
-            )
-        else:
-            sigs.append(
-                _make_signal_dict(
-                    entropy=1.0 + 0.01 * t,
-                    rep_count=0,
-                    delta_h=0.01 if t > 0 else None,
-                )
-            )
-    return {
-        "prompt_id": prompt_id,
-        "prompt_text": "test",
-        "model": "test-model",
-        "press": press,
-        "compression_ratio": compression_ratio,
-        "max_new_tokens": 512,
-        "seed": 42,
-        "generated_text": "output",
-        "ground_truth": "42",
-        "predicted_answer": "42",
-        "correct": True,
-        "stop_reason": "eos",
-        "catastrophes": catastrophes or [],
-        "num_tokens_generated": n_tokens,
-        "cache_size_after_prefill": None,
-        "catastrophe_onsets": catastrophe_onsets or {},
-        "signals": sigs,
-    }
-
-
-def _write_results(tmp_path: Path, press: str, ratio: float, results: list[dict]) -> None:
-    subdir = tmp_path / press
-    subdir.mkdir(parents=True, exist_ok=True)
-    fname = f"test-model_{ratio:.3f}_50p.json"
-    data = {
-        "config": {"model_name": "test-model", "press_name": press, "compression_ratio": ratio},
-        "summary": {},
-        "results": results,
-    }
-    (subdir / fname).write_text(json.dumps(data))
+from tests.helpers import make_result_json, write_result_file
 
 
 class TestFullPipeline:
@@ -97,25 +18,25 @@ class TestFullPipeline:
         # --- Create diverse results: 4 prompt_ids, 2 (press, ratio) combos ---
 
         # Combo 1: none / 0.0 — all clean
-        _write_results(
+        write_result_file(
             tmp_path,
             "none",
             0.0,
             [
-                _make_result(prompt_id="p0", press="none", compression_ratio=0.0, n_tokens=60),
-                _make_result(prompt_id="p1", press="none", compression_ratio=0.0, n_tokens=60),
-                _make_result(prompt_id="p2", press="none", compression_ratio=0.0, n_tokens=60),
-                _make_result(prompt_id="p3", press="none", compression_ratio=0.0, n_tokens=60),
+                make_result_json(prompt_id="p0", press="none", compression_ratio=0.0, n_tokens=60),
+                make_result_json(prompt_id="p1", press="none", compression_ratio=0.0, n_tokens=60),
+                make_result_json(prompt_id="p2", press="none", compression_ratio=0.0, n_tokens=60),
+                make_result_json(prompt_id="p3", press="none", compression_ratio=0.0, n_tokens=60),
             ],
         )
 
         # Combo 2: streaming_llm / 0.5 — p0 and p1 have catastrophes, p2 and p3 clean
-        _write_results(
+        write_result_file(
             tmp_path,
             "streaming_llm",
             0.500,
             [
-                _make_result(
+                make_result_json(
                     prompt_id="p0",
                     press="streaming_llm",
                     compression_ratio=0.5,
@@ -123,7 +44,7 @@ class TestFullPipeline:
                     catastrophes=["looping"],
                     catastrophe_onsets={"looping": 30},
                 ),
-                _make_result(
+                make_result_json(
                     prompt_id="p1",
                     press="streaming_llm",
                     compression_ratio=0.5,
@@ -131,13 +52,13 @@ class TestFullPipeline:
                     catastrophes=["looping"],
                     catastrophe_onsets={"looping": 25},
                 ),
-                _make_result(
+                make_result_json(
                     prompt_id="p2",
                     press="streaming_llm",
                     compression_ratio=0.5,
                     n_tokens=60,
                 ),
-                _make_result(
+                make_result_json(
                     prompt_id="p3",
                     press="streaming_llm",
                     compression_ratio=0.5,
@@ -212,23 +133,23 @@ class TestFullPipeline:
     def test_dataset_to_split_consistency(self, tmp_path: Path) -> None:
         """build_dataset -> split_by_prompt -> verify all tokens assigned, no overlap."""
         # Create results with 4 prompts across 2 configs
-        _write_results(
+        write_result_file(
             tmp_path,
             "none",
             0.0,
             [
-                _make_result(prompt_id="a", press="none", compression_ratio=0.0, n_tokens=30),
-                _make_result(prompt_id="b", press="none", compression_ratio=0.0, n_tokens=30),
-                _make_result(prompt_id="c", press="none", compression_ratio=0.0, n_tokens=30),
-                _make_result(prompt_id="d", press="none", compression_ratio=0.0, n_tokens=30),
+                make_result_json(prompt_id="a", press="none", compression_ratio=0.0, n_tokens=30),
+                make_result_json(prompt_id="b", press="none", compression_ratio=0.0, n_tokens=30),
+                make_result_json(prompt_id="c", press="none", compression_ratio=0.0, n_tokens=30),
+                make_result_json(prompt_id="d", press="none", compression_ratio=0.0, n_tokens=30),
             ],
         )
-        _write_results(
+        write_result_file(
             tmp_path,
             "snapkv",
             0.500,
             [
-                _make_result(
+                make_result_json(
                     prompt_id="a",
                     press="snapkv",
                     compression_ratio=0.5,
@@ -236,8 +157,8 @@ class TestFullPipeline:
                     catastrophes=["looping"],
                     catastrophe_onsets={"looping": 20},
                 ),
-                _make_result(prompt_id="b", press="snapkv", compression_ratio=0.5, n_tokens=40),
-                _make_result(
+                make_result_json(prompt_id="b", press="snapkv", compression_ratio=0.5, n_tokens=40),
+                make_result_json(
                     prompt_id="c",
                     press="snapkv",
                     compression_ratio=0.5,
@@ -245,7 +166,7 @@ class TestFullPipeline:
                     catastrophes=["looping"],
                     catastrophe_onsets={"looping": 15},
                 ),
-                _make_result(prompt_id="d", press="snapkv", compression_ratio=0.5, n_tokens=40),
+                make_result_json(prompt_id="d", press="snapkv", compression_ratio=0.5, n_tokens=40),
             ],
         )
 
@@ -274,3 +195,101 @@ class TestFullPipeline:
             trace_idxs = [t.trace_idx for t in ds.traces if t.prompt_id == prompt_id]
             in_val = [i in val_set for i in trace_idxs]
             assert all(in_val) or not any(in_val), f"Prompt {prompt_id} split across partitions"
+
+
+class TestControllerEvaluationPipeline:
+    """End-to-end: files -> dataset -> train -> evaluate_controller."""
+
+    def _write_sweep_data(self, tmp_path: Path) -> None:
+        """Create synthetic sweep data with baseline + compressed traces."""
+        prompts = [f"p{i}" for i in range(8)]
+
+        # Baseline (none, 0.0) — all correct
+        write_result_file(
+            tmp_path,
+            "none",
+            0.0,
+            [
+                make_result_json(prompt_id=pid, press="none", compression_ratio=0.0, n_tokens=50)
+                for pid in prompts
+            ],
+        )
+
+        # Compressed (streaming_llm, 0.875) — some catastrophes
+        compressed = []
+        for i, pid in enumerate(prompts):
+            if i < 3:
+                # Catastrophe traces with clear signal differentiation
+                compressed.append(
+                    make_result_json(
+                        prompt_id=pid,
+                        press="streaming_llm",
+                        compression_ratio=0.875,
+                        n_tokens=50,
+                        catastrophes=["looping"],
+                        catastrophe_onsets={"looping": 30},
+                        correct=False,
+                    )
+                )
+            else:
+                # Clean traces
+                compressed.append(
+                    make_result_json(
+                        prompt_id=pid,
+                        press="streaming_llm",
+                        compression_ratio=0.875,
+                        n_tokens=50,
+                    )
+                )
+        write_result_file(tmp_path, "streaming_llm", 0.875, compressed)
+
+    def test_train_then_evaluate_controller(self, tmp_path: Path) -> None:
+        """Full pipeline: build dataset -> train predictor -> evaluate controller."""
+        self._write_sweep_data(tmp_path)
+
+        # Build dataset and train predictor
+        ds = build_dataset(tmp_path, num_prompts=50, horizon=16)
+        split = split_by_prompt(ds, val_fraction=0.3, random_state=42)
+
+        X_train = ds.X[split.train_mask]
+        y_train = ds.y[split.train_mask]
+
+        predictor = train_predictor(X_train, y_train, xgb_params={"n_estimators": 20})
+
+        # Get holdout prompt IDs for controller evaluation
+        holdout_prompts = {ds.traces[i].prompt_id for i in split.val_traces}
+
+        # Evaluate controller
+        config = ControllerConfig(
+            safe_compression_ratio=0.0,
+            tau_low=0.3,
+            tau_high=0.7,
+            k_escalate=3,
+            j_deescalate=5,
+        )
+        result = evaluate_controller(
+            tmp_path,
+            predictor,
+            num_prompts=50,
+            controller_config=config,
+            holdout_prompt_ids=holdout_prompts,
+        )
+
+        # Basic structural checks
+        assert isinstance(result, EvalResult)
+        assert result.safe_compression_ratio == 0.0
+
+        # Should have exactly 1 budget (streaming_llm at 0.875)
+        assert len(result.budgets) == 1
+        b = result.budgets[0]
+        assert b.press == "streaming_llm"
+        assert b.compression_ratio == 0.875
+
+        # Metrics should be internally consistent
+        assert b.n_prompts > 0
+        assert b.controlled_cfr_count == b.baseline_cfr_count - b.catastrophes_prevented
+        assert 0.0 <= b.baseline_cfr <= 1.0
+        assert 0.0 <= b.controlled_cfr <= 1.0
+        assert b.false_trigger_count >= 0
+        assert b.catastrophes_prevented >= 0
+        assert b.catastrophes_prevented <= b.baseline_cfr_count

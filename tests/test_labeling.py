@@ -189,6 +189,53 @@ class TestEdgeCases:
         # No applicable onset → all zeros
         assert labels == [0] * 100
 
+    def test_horizon_zero_labels_from_onset(self) -> None:
+        """H=0 means start labeling at exactly the onset position."""
+        result = _make_result(
+            n_tokens=100,
+            catastrophes=["looping"],
+            catastrophe_onsets={"looping": 50},
+        )
+        labels = compute_hazard_labels(result, horizon=0)
+        # start = max(0, 50 - 0) = 50 → tokens 50..99 = 1
+        assert all(v == 0 for v in labels[:50])
+        assert all(v == 1 for v in labels[50:])
+
+    def test_very_large_horizon_all_hazard(self) -> None:
+        """Horizon larger than sequence length labels everything."""
+        result = _make_result(
+            n_tokens=100,
+            catastrophes=["looping"],
+            catastrophe_onsets={"looping": 50},
+        )
+        labels = compute_hazard_labels(result, horizon=10000)
+        # start = max(0, 50 - 10000) = 0 → all labeled 1
+        assert all(v == 1 for v in labels)
+
+    def test_onset_at_zero(self) -> None:
+        """Onset at token 0 should label everything regardless of horizon."""
+        result = _make_result(
+            n_tokens=100,
+            catastrophes=["looping"],
+            catastrophe_onsets={"looping": 0},
+        )
+        labels = compute_hazard_labels(result, horizon=32)
+        assert all(v == 1 for v in labels)
+
+    def test_multiple_catastrophes_same_onset(self) -> None:
+        """Looping and non_termination at the same position."""
+        result = _make_result(
+            n_tokens=512,
+            max_new_tokens=512,
+            catastrophes=["looping", "non_termination"],
+            catastrophe_onsets={"looping": 384},  # same as nt proxy
+            stop_reason="max_tokens",
+        )
+        labels = compute_hazard_labels(result, horizon=32, nt_onset_frac=0.75)
+        # Both onsets at 384, start = 384 - 32 = 352
+        assert all(v == 0 for v in labels[:352])
+        assert all(v == 1 for v in labels[352:])
+
 
 # ---------------------------------------------------------------------------
 # Tests: compute_onset_position
@@ -240,3 +287,22 @@ class TestComputeOnsetPosition:
             catastrophes=["wrong_answer"],
         )
         assert compute_onset_position(result) is None
+
+    def test_compute_onset_position_zero_tokens(self) -> None:
+        """Zero tokens returns None regardless of catastrophes."""
+        result = _make_result(
+            n_tokens=0,
+            catastrophes=["non_termination"],
+            stop_reason="max_tokens",
+        )
+        assert compute_onset_position(result) is None
+
+    def test_hazard_labels_zero_tokens(self) -> None:
+        """Zero tokens returns empty label list."""
+        result = _make_result(
+            n_tokens=0,
+            catastrophes=["non_termination"],
+            stop_reason="max_tokens",
+        )
+        labels = compute_hazard_labels(result, horizon=32)
+        assert labels == []
