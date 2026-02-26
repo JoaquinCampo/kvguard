@@ -111,14 +111,26 @@ def train(
     output_dir: Path = typer.Option(Path("models"), help="Directory for model + metrics"),
     run_cv: bool = typer.Option(True, help="Run leave-one-compressor-out CV"),
     model_filter: str = typer.Option("", help="Only use traces from this model (empty=all)"),
+    press_exclude: str = typer.Option(
+        "", help="Comma-separated compressor names to exclude (e.g. observed_attention)"
+    ),
+    exclude_features: str = typer.Option(
+        "", help="Comma-separated feature names to drop before training"
+    ),
 ) -> None:
     """Train hazard predictor on sweep results."""
     from kvguard.train import run_training
 
     mf = model_filter or None
+    pe = [p.strip() for p in press_exclude.split(",") if p.strip()] or None
+    ef = [f.strip() for f in exclude_features.split(",") if f.strip()] or None
     logger.info(f"Training: results={results_dir}, H={horizon}, val_frac={val_fraction}")
     if mf:
         logger.info(f"Model filter: {mf}")
+    if pe:
+        logger.info(f"Excluding compressors: {pe}")
+    if ef:
+        logger.info(f"Excluding features: {ef}")
     result = run_training(
         results_dir,
         num_prompts=num_prompts,
@@ -129,6 +141,8 @@ def train(
         run_cv=run_cv,
         output_dir=output_dir,
         model_filter=mf,
+        press_exclude=pe,
+        exclude_features=ef,
     )
     logger.info(f"Train metrics: {result.train_metrics.to_dict()}")
     logger.info(f"Val metrics:   {result.val_metrics.to_dict()}")
@@ -208,6 +222,76 @@ def eval_controller(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(eval_result_to_dict(result), indent=2))
     logger.info(f"Results saved to {output_path}")
+
+
+@app.command("live-validate")
+def live_validate(
+    model: str = typer.Option("Qwen/Qwen2.5-7B-Instruct", help="HuggingFace model name"),
+    predictor_path: Path = typer.Option(
+        Path("models/hazard_predictor.json"), help="Trained hazard predictor"
+    ),
+    num_prompts: int = typer.Option(50, help="Number of GSM8K prompts"),
+    ratios: str = typer.Option("0.75,0.875", help="Comma-separated compression ratios to test"),
+    max_new_tokens: int = typer.Option(512, help="Max tokens per prompt"),
+    n_sink: int = typer.Option(4, help="StreamingLLM sink tokens"),
+    seed: int = typer.Option(42, help="Random seed"),
+    device: str = typer.Option("auto", help="Device: auto | cpu | cuda | mps"),
+    output_dir: Path = typer.Option(Path("results/live_validation"), help="Output directory"),
+    tau_low: float = typer.Option(0.3, help="NORMAL → ALERT threshold"),
+    tau_high: float = typer.Option(0.7, help="ALERT → SAFE threshold"),
+    k_escalate: int = typer.Option(8, help="Consecutive tokens to escalate"),
+    j_deescalate: int = typer.Option(5, help="Consecutive tokens to de-escalate"),
+) -> None:
+    """Run Phase 4 live validation: static vs controller-driven StreamingLLM."""
+    from kvguard.live_experiment import run_live_validation
+
+    ratio_list = [float(r.strip()) for r in ratios.split(",")]
+    logger.info(f"Live validation: {num_prompts} prompts, ratios={ratio_list}")
+    run_live_validation(
+        model_name=model,
+        predictor_path=predictor_path,
+        num_prompts=num_prompts,
+        compression_ratios=ratio_list,
+        max_new_tokens=max_new_tokens,
+        n_sink=n_sink,
+        seed=seed,
+        device=device,
+        output_dir=output_dir,
+        tau_low=tau_low,
+        tau_high=tau_high,
+        k_escalate=k_escalate,
+        j_deescalate=j_deescalate,
+    )
+
+
+@app.command("analyze-live")
+def analyze_live(
+    output_dir: Path = typer.Option(
+        Path("results/live_validation"), help="Live validation results directory"
+    ),
+    offline_eval: Path = typer.Option(
+        Path("results/controller_eval.json"), help="Offline controller eval JSON (for comparison)"
+    ),
+    save_report: Path = typer.Option(
+        Path("results/live_validation/analysis_report.json"), help="Save analysis JSON"
+    ),
+) -> None:
+    """Analyze Phase 4 live validation results."""
+    import json
+
+    from kvguard.analyze_live import analyze_live_validation
+
+    offline_path = offline_eval if offline_eval.exists() else None
+    if offline_path:
+        logger.info(f"Using offline eval: {offline_path}")
+    else:
+        logger.info("No offline eval found — skipping simulation gap comparison")
+
+    report = analyze_live_validation(output_dir, offline_eval_path=offline_path)
+
+    save_report.parent.mkdir(parents=True, exist_ok=True)
+    save_report.write_text(json.dumps(report, indent=2, default=str))
+    logger.info(f"Report saved to {save_report}")
 
 
 def main() -> None:

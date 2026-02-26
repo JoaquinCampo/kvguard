@@ -71,3 +71,31 @@ class RunResult(BaseModel):
     cache_size_after_prefill: int | None
     catastrophe_onsets: dict[str, int] = {}  # catastrophe_type -> token position of onset
     signals: list[TokenSignals]
+
+
+class LiveResult(BaseModel):
+    """Result of a live controlled generation run."""
+
+    prompt_id: str
+    prompt_text: str
+    model: str
+    compression_ratio: float  # starting compression ratio
+    max_new_tokens: int = 512
+    seed: int
+    generated_text: str
+    ground_truth: str
+    predicted_answer: str | None
+    correct: bool | None
+    stop_reason: str  # eos | max_tokens
+    catastrophes: list[str]
+    catastrophe_onsets: dict[str, int] = {}
+    num_tokens_generated: int
+    signals: list[TokenSignals]
+    # Live controller fields
+    controlled: bool  # was the controller active?
+    mode_history: list[int] = []  # Mode value per token
+    hazard_probs: list[float] = []  # predictor probability per token
+    eviction_history: list[bool] = []  # True = evicted this step
+    cache_sizes: list[int] = []  # cache seq_len after each step
+    safe_trigger_token: int | None = None  # first token where SAFE activated
+    generation_time_seconds: float = 0.0
