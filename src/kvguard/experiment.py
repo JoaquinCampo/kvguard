@@ -9,7 +9,12 @@ from typing import Any
 
 import torch
 from loguru import logger
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+)
 
 from kvguard.config import ExperimentConfig, RunResult
 from kvguard.detectors import detect_all, detect_catastrophe_onsets, parse_gsm8k_answer
@@ -63,12 +68,18 @@ def get_press(name: str, compression_ratio: float) -> Any:  # noqa: ANN201
     if name == "none":
         return None
 
-    from kvpress import ObservedAttentionPress, SnapKVPress, StreamingLLMPress
+    from kvpress import (
+        ExpectedAttentionPress,
+        ObservedAttentionPress,
+        SnapKVPress,
+        StreamingLLMPress,
+    )
 
     presses = {
         "streaming_llm": StreamingLLMPress,
         "observed_attention": ObservedAttentionPress,
         "snapkv": SnapKVPress,
+        "expected_attention": ExpectedAttentionPress,
     }
     if name not in presses:
         raise ValueError(f"Unknown press: {name}. Available: {list(presses.keys())}")
@@ -272,6 +283,7 @@ def run_prompts(
     if completed_ids:
         logger.info(f"Resuming from checkpoint: {len(completed_ids)}/{len(prompts)} prompts done")
 
+    n_failed = 0
     for i, prompt_data in enumerate(prompts):
         if prompt_data["id"] in completed_ids:
             logger.info(f"[{i + 1}/{len(prompts)}] {prompt_data['id']} — skipped (checkpoint)")
@@ -284,6 +296,7 @@ def run_prompts(
             result = run_single(model, tokenizer, device, prompt_data, config, press)
         except Exception as e:
             logger.error(f"  FAILED: {e}")
+            n_failed += 1
             continue
 
         elapsed = time.time() - t0
@@ -304,6 +317,9 @@ def run_prompts(
             torch.mps.empty_cache()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    if n_failed > 0:
+        logger.warning(f"{n_failed}/{len(prompts)} prompts failed and were excluded from results")
 
     return results
 
@@ -349,7 +365,7 @@ def result_exists(config: ExperimentConfig) -> bool:
 
 # Sweep configuration: ratios × methods
 SWEEP_RATIOS = [0.0, 0.25, 0.5, 0.625, 0.75, 0.875]
-SWEEP_METHODS = ["streaming_llm", "snapkv", "observed_attention"]
+SWEEP_METHODS = ["streaming_llm", "snapkv", "expected_attention"]
 
 
 def build_sweep_configs(
@@ -427,7 +443,10 @@ def run_sweep(
     total = len(configs)
     done = 0
 
-    for group_name, group_configs in [("default", default_configs), ("eager", eager_configs)]:
+    for group_name, group_configs in [
+        ("default", default_configs),
+        ("eager", eager_configs),
+    ]:
         if not group_configs:
             continue
 
