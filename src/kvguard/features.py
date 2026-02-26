@@ -243,6 +243,7 @@ def build_dataset(
     nt_onset_frac: float = 0.75,
     rolling_window: int = ROLLING_WINDOW,
     model_filter: str | None = None,
+    press_exclude: list[str] | None = None,
 ) -> Dataset:
     """Load all sweep result files and build a flat ML dataset.
 
@@ -253,6 +254,7 @@ def build_dataset(
         nt_onset_frac: Non-termination proxy onset fraction.
         rolling_window: Window size for rolling features.
         model_filter: If set, only include traces where ``run.model`` matches.
+        press_exclude: If set, skip traces whose ``press`` is in this list.
 
     Returns:
         Dataset with concatenated features, labels, and metadata.
@@ -275,6 +277,8 @@ def build_dataset(
         for result_dict in results_list:
             run = result_dict_to_run_result(result_dict)
             if model_filter and run.model != model_filter:
+                continue
+            if press_exclude and run.press in press_exclude:
                 continue
             n_tok = run.num_tokens_generated
             if n_tok == 0:
@@ -325,6 +329,17 @@ def build_dataset(
                 )
             )
             trace_idx += 1
+
+    if not all_X:
+        n_feat = len(feature_names(rolling_window))
+        return Dataset(
+            X=np.empty((0, n_feat), dtype=np.float32),
+            y=np.empty(0, dtype=np.float32),
+            trace_ids=np.empty(0, dtype=np.int32),
+            feature_names=feature_names(rolling_window),
+            traces=[],
+            onset_positions=np.empty(0, dtype=np.int32),
+        )
 
     return Dataset(
         X=np.concatenate(all_X, axis=0),

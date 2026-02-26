@@ -65,7 +65,7 @@ def detect_catastrophe_onsets(
         if onset is not None:
             onsets["looping"] = onset
 
-    if "non_termination" in catastrophes:
+    if "non_termination" in catastrophes and token_ids:
         # Non-termination onset: the last token position (the whole trace
         # failed to stop, so onset is effectively the end of generation).
         onsets["non_termination"] = len(token_ids) - 1

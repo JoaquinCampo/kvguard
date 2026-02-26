@@ -200,6 +200,9 @@ def delta_h_analysis(result_dir: Path = Path("results"), num_prompts: int = 50) 
 
     # Thresholds: just above baseline maximum
     entropy_threshold = max(baseline_max_entropies) * 1.1
+    if not baseline_abs_deltas:
+        logger.warning("No baseline delta_h data — cannot compute delta_h threshold")
+        return
     delta_h_threshold = sorted(baseline_abs_deltas)[int(0.99 * len(baseline_abs_deltas))] * 1.1
 
     print(f"Entropy threshold: {entropy_threshold:.2f} (1.1 × baseline max)")

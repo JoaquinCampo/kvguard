@@ -140,12 +140,15 @@ def compute_risk_score(
     rep_count = float(signals.get("rep_count", 0))
     top1_prob = float(signals.get("top1_prob", 1.0))
 
-    # Normalize to roughly [0, 1]
+    # Normalize to roughly [0, 1] (guard against zero norms)
+    def _norm(value: float, norm: float) -> float:
+        return min(value / norm, 1.0) if norm > 0 else (1.0 if value > 0 else 0.0)
+
     components = {
-        "entropy": min(entropy / n["entropy"], 1.0),
-        "delta_h": min(delta_h / n["delta_h"], 1.0),
-        "rep_count": min(rep_count / n["rep_count"], 1.0),
-        "top1_prob_inv": min((1.0 - top1_prob) / n["top1_prob_inv"], 1.0),
+        "entropy": _norm(entropy, n["entropy"]),
+        "delta_h": _norm(delta_h, n["delta_h"]),
+        "rep_count": _norm(rep_count, n["rep_count"]),
+        "top1_prob_inv": _norm(1.0 - top1_prob, n["top1_prob_inv"]),
     }
 
     score = sum(w.get(k, 0.0) * v for k, v in components.items())
@@ -276,6 +279,63 @@ class RiskController:
         )
 
         # If mode changed, reset counters
+        if new_mode != self._mode:
+            self._consecutive_high = 0
+            self._consecutive_low = 0
+            self._mode = new_mode
+
+        self._step_count += 1
+
+        return ControllerAction(
+            mode=self._mode,
+            compression_ratio=self._action_compression_ratio(),
+            protect_thinking_tokens=self._mode >= Mode.ALERT,
+            trigger_recomputation=False,
+            risk_score=risk,
+        )
+
+    def step_with_risk(self, risk_score: float) -> ControllerAction:
+        """Process one token using a pre-computed risk score.
+
+        Same state machine logic as :meth:`step`, but accepts a risk score
+        directly (e.g., hazard probability from the ML predictor) instead of
+        computing it from raw signals via :func:`compute_risk_score`.
+
+        Args:
+            risk_score: Pre-computed risk in [0, 1] (e.g., XGBoost hazard_prob).
+
+        Returns:
+            ControllerAction with mode, compression ratio, and flags.
+        """
+        risk = max(0.0, min(risk_score, 1.0))
+        self._risk_history.append(risk)
+
+        # Update consecutive counters based on current mode thresholds
+        escalation_threshold = (
+            self.config.tau_high if self._mode >= Mode.ALERT else self.config.tau_low
+        )
+        deescalation_threshold = (
+            self.config.tau_low if self._mode <= Mode.ALERT else self.config.tau_high
+        )
+
+        if risk > escalation_threshold:
+            self._consecutive_high += 1
+            self._consecutive_low = 0
+        elif risk < deescalation_threshold:
+            self._consecutive_low += 1
+            self._consecutive_high = 0
+        else:
+            self._consecutive_high = 0
+            self._consecutive_low = 0
+
+        new_mode = _decide_mode(
+            self._mode,
+            risk,
+            self._consecutive_high,
+            self._consecutive_low,
+            self.config,
+        )
+
         if new_mode != self._mode:
             self._consecutive_high = 0
             self._consecutive_low = 0

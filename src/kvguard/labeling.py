@@ -27,6 +27,9 @@ def compute_onset_position(
         Earliest onset position, or None if no applicable catastrophe.
     """
     n_tokens = result.num_tokens_generated
+    if n_tokens == 0:
+        return None
+
     onsets: list[int] = []
 
     if "looping" in result.catastrophe_onsets:
@@ -67,6 +70,9 @@ def compute_hazard_labels(
         List of 0/1 labels, one per generated token.
     """
     n_tokens = result.num_tokens_generated
+    if n_tokens == 0:
+        return []
+
     labels = [0] * n_tokens
 
     # Collect applicable onset positions
